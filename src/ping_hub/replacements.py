@@ -30,6 +30,14 @@ from pathlib import Path
 
 VERSION = 1
 
+# marks a pair this app generated from a star-command, so a future "remove
+# imported" can spare everything Chris typed by hand. Hand-added pairs never
+# carry it, and neither do the cx.toml migration's — those are his, not ours.
+ORIGIN_IMPORT = "import"
+
+# the word a speech model puts where Chris said "*"
+STAR_WORD = "star"
+
 
 def store_path(cfg) -> Path:
     return cfg.paths.base_store / "hub" / "replacements.json"
@@ -71,7 +79,12 @@ def save(cfg, doc: dict) -> Path:
 
 
 def normalise(pairs: list) -> list[dict]:
-    """Accept what a UI sends; keep only what the engine can use."""
+    """Accept what a UI sends; keep only what the engine can use.
+
+    `origin` is emitted ONLY when it is set. A hand-added pair is exactly
+    `{from,to,enabled}` and stays that way — the marker is something a pair
+    acquires by being generated, not a field every pair carries.
+    """
     out = []
     for raw in pairs or []:
         if not isinstance(raw, dict):
@@ -79,9 +92,13 @@ def normalise(pairs: list) -> list[dict]:
         frm = str(raw.get("from", "")).strip()
         if not frm:
             continue            # a rule with no left side matches nothing
-        out.append({"from": frm,
-                    "to": str(raw.get("to", "")),
-                    "enabled": bool(raw.get("enabled", True))})
+        pair = {"from": frm,
+                "to": str(raw.get("to", "")),
+                "enabled": bool(raw.get("enabled", True))}
+        origin = str(raw.get("origin", "")).strip()
+        if origin:
+            pair["origin"] = origin
+        out.append(pair)
     return out
 
 
@@ -105,6 +122,101 @@ def apply(text: str, pairs: list) -> str:
 
 def apply_for(cfg, text: str) -> str:
     return apply(text, load(cfg).get("pairs"))
+
+
+# ── star-commands as spoken fixes ────────────────────────────────────────────
+# Chris dictates his star-commands aloud and every speech model renders "*end"
+# as "star end". Rather than hand-writing a pair per command, generate them:
+# heard "star end" -> sent "*end".
+def _key(text) -> str:
+    """Identity of a rule's left side: case and spacing are not part of it.
+
+    Matching is already case-insensitive, and "star  end" and "star end" are
+    the same rule to a reader — so they must be the same rule to an import, or
+    a second run adds a duplicate that does nothing.
+    """
+    return " ".join(str(text).split()).casefold()
+
+
+def _spoken(name) -> str:
+    """A command name the way it comes out of a microphone: separators are
+    heard as spaces, and runs of whitespace collapse."""
+    return " ".join(str(name).replace("-", " ").replace("_", " ").split())
+
+
+def generate_pair(name) -> dict | None:
+    """One command -> one pair, or None when the name cannot make a rule.
+
+    The guard is not cosmetic. A name that is blank, whitespace, or nothing but
+    separators collapses to the bare word "star" — and a rule rewriting the
+    standalone word "star" would corrupt ordinary dictation everywhere. The
+    command feed does not stop this: its filter is `if c.get("name")`, and a
+    single space is truthy.
+    """
+    spoken = _spoken(name)
+    if not spoken:
+        return None
+    sent = str(name).strip()
+    if not sent:
+        return None
+    return {"from": f"{STAR_WORD} {spoken}", "to": "*" + sent,
+            "enabled": True, "origin": ORIGIN_IMPORT}
+
+
+def command_pairs(names) -> list[dict]:
+    """Generated pairs for `names`, in the order given, skipping the unusable."""
+    out = []
+    for name in names or []:
+        pair = generate_pair(name)
+        if pair is not None:
+            out.append(pair)
+    return out
+
+
+def merge_imports(existing: list, generated: list) -> tuple[list[dict], int, int]:
+    """Append every generated pair whose left side is not already present.
+
+    Returns (pairs, added, skipped).
+
+    APPEND, never prepend, and never rewrite. Order is behaviour in this list:
+    a generated generic rule placed ahead of a longer hand-written one would
+    eat it — with "star handoff" -> "*handoff" running first, a hand-written
+    "star handoff to chris" can never match again. Appending puts everything
+    generated behind everything Chris wrote himself.
+
+    A left side that already exists is SKIPPED UNTOUCHED whatever its origin,
+    enabled state, or position. Importing is how new rules arrive; it is never
+    how an existing rule changes.
+    """
+    pairs = normalise(existing)
+    seen = {_key(p["from"]) for p in pairs}
+    added = skipped = 0
+    for gen in generated or []:
+        key = _key(gen.get("from", ""))
+        if not key or key in seen:
+            skipped += 1
+            continue
+        seen.add(key)
+        pairs.append(dict(gen))
+        added += 1
+    return pairs, added, skipped
+
+
+def import_commands(cfg, existing: list, names) -> dict:
+    """Merge generated pairs into `existing` and SAVE.
+
+    `existing` is what the settings modal currently holds, not what is on disk,
+    so anything typed and not yet saved survives the import instead of being
+    silently discarded. The caller re-syncs its list from `pairs` in the reply,
+    which is what stops a later Save from clobbering the rows just added.
+    """
+    pairs, added, skipped = merge_imports(existing, command_pairs(names))
+    doc = load(cfg)
+    doc["pairs"] = pairs
+    doc["imported_from_cx_toml"] = True   # editing here supersedes the toml
+    save(cfg, doc)
+    return {"ok": True, "pairs": load(cfg)["pairs"],
+            "added": added, "skipped": skipped}
 
 
 # ── one-time migration off cx.toml ───────────────────────────────────────────

@@ -111,6 +111,11 @@
   .repadd { background: var(--panel2); border: 1px solid var(--line);
     color: var(--accent); border-radius: 6px; padding: 7px 12px;
     cursor: pointer; font-size: 14px; margin-top: 6px; }
+  .repbtns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .repbtns .repadd { margin-top: 0; }
+  .cmdrow .have { color: var(--dim); font-size: 12px; flex: 0 0 auto; }
+  .cmdrow .box { width: 16px; height: 16px; flex: 0 0 auto;
+    accent-color: var(--accent2); pointer-events: none; }
   #modal .hint { color: var(--dim); font-size: 13px; margin: 2px 0 8px; }
   .badge.ghostb { color: var(--dim); border-color: var(--line);
                   border-style: dashed; }
@@ -1651,7 +1656,13 @@ document.getElementById("gear").onclick = async () => {
       Whole words, case-insensitive. The same list drives the in-app mic and
       push-to-talk dictation.</div>
     <div id="reps"></div>
-    <button id="rep-add" class="repadd">+ add a fix</button>
+    <div class="repbtns">
+      <button id="rep-add" class="repadd">+ add a fix</button>
+      <button id="rep-imp" class="repadd">import commands to STT</button>
+      <button id="rep-all" class="repadd">import all</button>
+      <button id="rep-fav" class="repadd">import favourites</button>
+    </div>
+    <div id="repmsg" class="hint"></div>
     <div class="actions"><button class="cancel">Cancel</button><button class="save">Save</button></div>
   </div>`;
   document.body.appendChild(ov);
@@ -1687,6 +1698,150 @@ document.getElementById("gear").onclick = async () => {
     drawReps();
     const last = ov.querySelectorAll(".reprow .rfrom");
     if (last.length) last[last.length - 1].focus();
+  };
+
+  // ── import star-commands as spoken fixes ────────────────────────────────
+  // Speech models render "*end" as "star end", so every command becomes a pair
+  // heard "star <name>" -> sent "*<name>". The server owns generation and the
+  // skip rule; this is the picker.
+  const repKey = s => String(s || "").trim().split(/\s+/).join(" ").toLowerCase();
+  const repHeard = n =>
+    "star " + String(n).replace(/[-_]/g, " ").trim().split(/\s+/).join(" ");
+  const repMsg = (text, bad) => {
+    const el = ov.querySelector("#repmsg");
+    el.textContent = text || "";
+    el.className = bad ? "hint warn" : "hint";
+  };
+
+  let cmdCache = null;
+  async function loadCmds() {
+    if (cmdCache) return cmdCache;
+    try {
+      const got = await (await fetch("/api/commands")).json();
+      if (!Array.isArray(got)) {
+        repMsg("commands.toml: " + ((got && got.error) || "unreadable"), true);
+        return null;
+      }
+      cmdCache = got;
+      return got;
+    } catch (e) {
+      repMsg("could not read commands — " + e.message, true);
+      return null;
+    }
+  }
+
+  // The import COMMITS, and the merge base is what THIS modal holds — so a
+  // pair typed and not yet saved survives it. Re-syncing from the reply is
+  // what stops the later Save from writing a stale list back over the import.
+  async function importCommands(names, btn) {
+    const label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "importing…";
+    let out;
+    try {
+      out = await (await fetch("/api/replacements/import", { method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ pairs, names }) })).json();
+    } catch (e) {
+      out = { ok: false, detail: e.message };
+    }
+    btn.disabled = false;
+    btn.textContent = label;
+    if (!out || !out.ok) {
+      repMsg((out && out.detail) || "import failed", true);
+      return out;
+    }
+    pairs = (out.pairs || []).map(p => ({ ...p }));
+    drawReps();
+    const bits = [`${out.added} imported`, `${out.skipped} already present`];
+    if ((out.unknown || []).length) bits.push(`${out.unknown.length} not in commands.toml`);
+    repMsg(bits.join(", "));
+    return out;
+  }
+
+  ov.querySelector("#rep-all").onclick = async e => {
+    const cmds = await loadCmds();
+    if (cmds) importCommands(cmds.map(c => c.name), e.target);
+  };
+  ov.querySelector("#rep-fav").onclick = async e => {
+    const favs = hubCfg.cmd_favs || [];
+    // no favourites imports NOTHING — never everything
+    if (!favs.length) { repMsg("no favourites yet — star commands in the ✳ palette first"); return; }
+    importCommands([...favs], e.target);
+  };
+
+  ov.querySelector("#rep-imp").onclick = async () => {
+    const cmds = await loadCmds();
+    if (!cmds) return;
+    const favs = new Set(hubCfg.cmd_favs || []);
+    const picked = new Set();
+    // a second overlay above settings: nothing in this page ever looks
+    // #overlay up, and at equal z-index the later node paints on top
+    const iv = document.createElement("div");
+    iv.id = "overlay";
+    iv.innerHTML = `<div id="modal">
+      <h2>import commands as spoken fixes</h2>
+      <div class="hint">heard "star &lt;name&gt;" → sent "*&lt;name&gt;". Commands you
+        already have a fix for are marked, and an import skips them.</div>
+      <input id="impq" placeholder="filter…" style="width:100%;background:var(--panel2);
+        border:1px solid var(--line);color:var(--text);border-radius:8px;padding:9px 12px;font-size:15px">
+      <div id="cmdlist"></div>
+      <div id="impmsg" class="hint"></div>
+      <div class="actions"><button class="cancel">Cancel</button>
+        <button id="impall" class="repadd">select all shown</button>
+        <button class="save" id="impgo" disabled>import 0 selected</button></div>
+    </div>`;
+    document.body.appendChild(iv);
+    const listEl = iv.querySelector("#cmdlist");
+    const goBtn = iv.querySelector("#impgo");
+    let shown = [];
+    const render = q => {
+      const term = (q || "").toLowerCase();
+      const held = new Set(pairs.map(p => repKey(p.from)));
+      shown = cmds.filter(c => !term || c.name.toLowerCase().includes(term) ||
+                                (c.description || "").toLowerCase().includes(term));
+      shown.sort((a, b) => (favs.has(b.name) - favs.has(a.name)) ||
+                            a.name.localeCompare(b.name));
+      listEl.innerHTML = shown.map(c => {
+        const has = held.has(repKey(repHeard(c.name)));
+        return `<div class="cmdrow ${picked.has(c.name) ? "selq" : ""}" data-n="${c.name}">
+          <input type="checkbox" class="box" ${picked.has(c.name) ? "checked" : ""}>
+          <span class="cn">*${c.name}</span>
+          <span class="cd" title="${(c.description || "").replace(/"/g, "&quot;").replace(/</g, "&lt;")}">${(c.description || "").replace(/</g, "&lt;")}</span>
+          ${has ? '<span class="have">already a fix</span>' : ""}
+          <span class="fav ${favs.has(c.name) ? "on" : ""}" title="favourite">★</span>
+        </div>`;
+      }).join("");
+      listEl.querySelectorAll(".cmdrow").forEach(r => {
+        r.onclick = () => {
+          const n = r.dataset.n;
+          picked.has(n) ? picked.delete(n) : picked.add(n);
+          render(iv.querySelector("#impq").value);
+        };
+      });
+      goBtn.disabled = !picked.size;
+      goBtn.textContent = `import ${picked.size} selected`;
+    };
+    render("");
+    iv.querySelector("#impq").oninput = e => render(e.target.value);
+    iv.querySelector("#impq").focus();
+    iv.querySelector("#impall").onclick = () => {
+      shown.forEach(c => picked.add(c.name));
+      render(iv.querySelector("#impq").value);
+    };
+    iv.onclick = e => { if (e.target === iv) iv.remove(); };
+    iv.querySelector(".cancel").onclick = () => iv.remove();
+    goBtn.onclick = async e => {
+      const out = await importCommands([...picked], e.target);
+      if (!out || !out.ok) {
+        // never close on a failure: closing looks identical to succeeding
+        const m = iv.querySelector("#impmsg");
+        m.textContent = (out && out.detail) || "import failed";
+        m.className = "hint warn";
+        return;
+      }
+      iv.remove();
+    };
   };
 
   ov.onclick = e => { if (e.target === ov) ov.remove(); };

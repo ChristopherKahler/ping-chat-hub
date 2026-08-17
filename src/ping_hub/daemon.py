@@ -107,6 +107,23 @@ def save_hub_settings(s: dict) -> None:
         json.dump(s, fh, indent=1)
 
 
+def read_commands() -> list[dict]:
+    """Star commands from the WSL-owned commands.toml. READ ONLY — this file
+    belongs to base, and nothing here ever writes it.
+
+    One function, not two parses: the palette and the spoken-fix import must
+    agree on what a command is, or an import generates a rule for a command the
+    palette cannot send.
+    """
+    import tomllib
+    with open(CFG.paths.base_gbl / "commands.toml", "rb") as fh:
+        doc = tomllib.load(fh)
+    cmds = [{"name": c.get("name", ""), "description": c.get("description", "")}
+            for c in (doc.get("command") or doc.get("commands") or [])
+            if c.get("name")]
+    return sorted(cmds, key=lambda c: c["name"])
+
+
 GATED_DOC_WIN = CFG.paths.gated_doc
 GATED_DOC_WSL = CFG.paths.gated_doc_wsl
 
@@ -402,16 +419,11 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._json({"error": "not found"}, 404)
         elif u.path == "/api/commands":
-            # star-command palette source: parse commands.toml (WSL-owned
-            # symlink — read-only here, never written)
+            # star-command palette source: commands.toml (WSL-owned symlink —
+            # read-only here, never written)
             import tomllib
             try:
-                with open(CFG.paths.base_gbl / "commands.toml", "rb") as fh:
-                    doc = tomllib.load(fh)
-                cmds = [{"name": c.get("name", ""), "description": c.get("description", "")}
-                        for c in (doc.get("command") or doc.get("commands") or [])
-                        if c.get("name")]
-                self._json(sorted(cmds, key=lambda c: c["name"]))
+                self._json(read_commands())
             except (OSError, tomllib.TOMLDecodeError) as e:
                 self._json({"error": str(e)}, 500)
         elif u.path == "/api/voices":
@@ -744,6 +756,36 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "count": len(doc["pairs"])})
             except OSError as e:
                 self._json({"ok": False, "detail": str(e)}, 500)
+        elif u.path == "/api/replacements/import":
+            # star-commands -> spoken fixes. `names` is REQUIRED and an empty
+            # list imports NOTHING: a favourites import with no favourites must
+            # import zero, never everything, so absent and empty stay different
+            # facts (they are the same falsy value, which is exactly the trap).
+            import tomllib
+            from ping_hub import replacements
+            if not isinstance(payload.get("names"), list):
+                self._json({"ok": False,
+                            "detail": "names is required (a list; [] imports nothing)"},
+                           400)
+                return
+            try:
+                known = {c["name"] for c in read_commands()}
+            except (OSError, tomllib.TOMLDecodeError) as e:
+                self._json({"ok": False, "detail": f"commands.toml: {e}"}, 500)
+                return
+            asked = [str(n) for n in payload["names"]]
+            # a name the file does not carry is REPORTED, never invented — an
+            # import that quietly generates rules for commands that do not
+            # exist is worse than one that refuses
+            unknown = [n for n in asked if n not in known]
+            try:
+                out = replacements.import_commands(
+                    CFG, payload.get("pairs"), [n for n in asked if n in known])
+            except OSError as e:
+                self._json({"ok": False, "detail": str(e)}, 500)
+                return
+            out["unknown"] = unknown
+            self._json(out)
         elif u.path in ("/api/clear", "/api/close-session"):
             # CLEAR ends the session and boots the same codename back with its
             # handoff attached. CLOSE ends it and leaves it ended. Both refuse
