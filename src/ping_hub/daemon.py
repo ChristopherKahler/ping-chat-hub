@@ -336,6 +336,22 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/replacements":
             from ping_hub import replacements
             self._json(replacements.migrate_if_needed(CFG))
+        elif u.path == "/api/clear-preview":
+            # everything the confirm modal needs BEFORE anything is reaped:
+            # can this session even be cleared, and which handoff would the
+            # fresh one resume from
+            from ping_hub import handoffs, reap
+            q = parse_qs(u.query)
+            title = (q.get("title") or [""])[0]
+            side = (q.get("side") or ["win"])[0]
+            with engine.lock:
+                t = dict(engine.threads.get(f"{side}:{title}") or {})
+            ok, why = reap.confirm(reap.read_record(INBOX_ROOT, title))
+            match = handoffs.for_session(
+                handoffs.listing(CFG.paths.base_bin), title, t.get("projects"))
+            self._json({"title": title, "side": side,
+                        "reapable": ok, "reason": "" if ok else why,
+                        "handoff": handoffs.describe(match)})
         elif u.path == "/api/capabilities":
             # the package is opinionated: voice affordances always render, so
             # the page needs to be able to say WHY there is no audio instead
@@ -728,6 +744,47 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "count": len(doc["pairs"])})
             except OSError as e:
                 self._json({"ok": False, "detail": str(e)}, 500)
+        elif u.path in ("/api/clear", "/api/close-session"):
+            # CLEAR ends the session and boots the same codename back with its
+            # handoff attached. CLOSE ends it and leaves it ended. Both refuse
+            # unless the recorded process confirms — never a search.
+            from ping_hub import handoffs, reap
+            title = payload.get("title", "")
+            side = payload.get("side", "win")
+            if not title:
+                self._json({"ok": False, "detail": "title required"}, 400)
+                return
+            ok, detail = reap.reap(INBOX_ROOT, title)
+            if not ok:
+                self._json({"ok": False, "detail": detail}, 409)
+                return
+            if u.path == "/api/close-session":
+                self._json({"ok": True, "detail": detail, "rebooted": False})
+                return
+            with engine.lock:
+                t = dict(engine.threads.get(f"{side}:{title}") or {})
+            match = handoffs.for_session(
+                handoffs.listing(CFG.paths.base_bin), title, t.get("projects"))
+            pieces = [f"You are '{title}', rebooted with a clean context from "
+                      f"the hub. Register your codename immediately: base relay "
+                      f"register --as {title}."]
+            if match:
+                pieces.append(f"HANDOFF: read the handoff {match['slug']} and "
+                              f"resume that work exactly where it left off.")
+            args = ["--dangerously-skip-permissions"]
+            if CFG.spawn.disallowed_tools:
+                args += ["--disallowedTools", ",".join(CFG.spawn.disallowed_tools)]
+            try:
+                spawn_tab(side, args, t.get("cwd") or None, title=title,
+                          prompt="\n\n".join(pieces))
+            except OSError as e:
+                # the old session is already gone; say so rather than implying
+                # nothing happened
+                self._json({"ok": False, "rebooted": False,
+                            "detail": f"ended, but the reboot failed: {e}"}, 500)
+                return
+            self._json({"ok": True, "rebooted": True, "detail": detail,
+                        "handoff": match["slug"] if match else ""})
         elif u.path == "/api/settings":
             try:
                 save_hub_settings(payload)

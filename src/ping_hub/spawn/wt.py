@@ -31,6 +31,20 @@ def build_command(cfg, side: str, claude_args: list[str], cwd: str | None,
             lines.append(f"export BASE_RELAY_AS={q(pin)}")
         lines += ["export CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1",
                   "unset CLAUDE_CODE_CHILD_SESSION"]
+        if pin and cfg.wsl.home_linux:
+            # The session records its OWN pid so `clear` can confirm rather
+            # than search. `exec` below replaces this shell in place, so $$ is
+            # already the pid claude will run under.
+            inbox = f"{cfg.wsl.home_linux}/.base-gbl/.base/relay-inbox/{pin}"
+            lines += [
+                f"mkdir -p {q(inbox)}",
+                # /proc/<pid>/stat field 22 is start time in clock ticks since
+                # boot: the same "is this still the process I recorded" anchor
+                # the Windows side gets from CreationDate.
+                'PING_HUB_START=$(awk \'{print $22}\' /proc/$$/stat 2>/dev/null)',
+                f'printf \'{{"pid":%s,"image":"claude","created":"%s","side":"wsl"}}\' '
+                f'"$$" "$PING_HUB_START" > {q(inbox + "/.pid")}',
+            ]
         lines.append(f"exec claude {args}" + (" " + q(prompt) if prompt else ""))
         # the UNC path written to and the Linux path executed come from ONE
         # config key: they are the same directory, and them drifting apart is
@@ -67,9 +81,23 @@ def build_command(cfg, side: str, claude_args: list[str], cwd: str | None,
         b64 = base64.b64encode(prompt.encode("utf-8")).decode()
         parg = (" $([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("
                 f"'{b64}')) -replace '\"','\\\"')")
+    # This script runs IN the tab's own powershell host, so $PID is the process
+    # that owns the tab's lifecycle — the one `clear` must end as a tree. It is
+    # recorded here by the process itself; nothing downstream ever searches for
+    # it. (Never its parent: WindowsTerminal.exe is one process shared by every
+    # tab, and killing that closes all of them.)
+    rec = ""
+    if pin:
+        inbox = str(cfg.paths.base_store / "relay-inbox" / pin).replace("'", "''")
+        rec = (f"$d='{inbox}'; New-Item -ItemType Directory -Force -Path $d "
+               "| Out-Null; $me=Get-CimInstance Win32_Process -Filter "
+               "\"ProcessId=$PID\"; @{pid=$PID; image=$me.Name; "
+               "created=$me.CreationDate.ToString('o'); side='win'} "
+               "| ConvertTo-Json -Compress | Set-Content -Path "
+               "(Join-Path $d '.pid') -Encoding utf8; ")
     script = (f"{pin_env}$env:CLAUDE_CODE_FORCE_SESSION_PERSISTENCE='1'; "
               "Remove-Item Env:CLAUDE_CODE_CHILD_SESSION -ErrorAction SilentlyContinue; "
-              f"claude {args}{parg}")
+              f"{rec}claude {args}{parg}")
     enc = base64.b64encode(script.encode("utf-16-le")).decode()
     return ["wt", "-w", "0", "new-tab", "-p", cfg.terminal.windows_profile,
             "-d", cwd or str(Path.home()), "powershell", "-NoExit",
