@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-chat"
+version = "0.1.0"
+description = "Claude Code sessions in a browser — any directory, saved workspaces, live turn telemetry, mid-flight steering, Allow/Deny approvals."
+# 3.11, not 3.10: the hub reads hub.toml, cx.toml and commands.toml with
+# tomllib, which is stdlib only from 3.11
+requires-python = ">=3.11"
+dependencies = [
+  # the Allow/Deny permission gate is an MCP server (approve mode is the
+  # default posture, so this is not optional)
+  "mcp>=1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+claude-chat = "claude_chat.__main__:main"
+ping-hub = "ping_hub.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+claude_chat = ["chat.html"]
+# without these the hub installs as pure python and serves
+# "<h1>hub.html missing</h1>" — the UI and the PWA assets are data files, not
+# modules, so packages.find alone never picks them up
+ping_hub = ["hub.html", "assets/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# the suite must pass from a clean shell with no env exports (heron, G2
+# contract 2026-08-17). Both packages live under src/ and neither is installed
+# by default; this is pytest's own supported way to say so.
+pythonpath = ["src"]

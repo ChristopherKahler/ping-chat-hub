@@ -1,0 +1,1438 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ping hub</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/icon-192.png">
+<meta name="theme-color" content="#201b15">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<style>
+  /* warm, low-blue, solid — Chris is eye-strain sensitive */
+  :root {
+    --bg: #201b15; --panel: #2a241c; --panel2: #332c22; --line: #4a4033;
+    --text: #e8ddcb; --dim: #a89880; --accent: #e0a458; --accent2: #b8834a;
+    --in: #3a3226; --out: #2e3a2e; --peer: #33302a; --dead: #6b5f4e;
+  }
+  * { box-sizing: border-box; scrollbar-width: none; }
+  *::-webkit-scrollbar { display: none; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 16px/1.5 "Segoe UI", system-ui, sans-serif; height: 100vh;
+         height: 100dvh; /* phones: 100vh overflows past the URL bar and sinks
+                            the compose bar below the fold */
+         display: flex; overflow: hidden;
+         touch-action: pan-x pan-y; }  /* fingers scroll, never pinch-zoom */
+  #side { width: 340px; min-width: 220px; max-width: 640px; background: var(--panel);
+          display: flex; flex-direction: column; flex-shrink: 0; }
+  #divider { width: 6px; cursor: col-resize; background: var(--line);
+             flex-shrink: 0; }
+  #divider:hover, #divider.dragging { background: var(--accent2); }
+  #tabs { display: flex; }
+  #tabs button { flex: 1; padding: 12px 0; background: none; border: none;
+                 color: var(--dim); font-size: 15px; cursor: pointer;
+                 border-bottom: 2px solid transparent; }
+  #tabs button.on { color: var(--accent); border-bottom-color: var(--accent); }
+  #tabs #spawn { flex: 0 0 44px; font-size: 18px; color: var(--accent); }
+  #escbadge:not(:empty) { background: var(--accent); color: #1d1812;
+    border-radius: 9px; padding: 0 7px; margin-left: 6px; font-size: 12px;
+    font-weight: 700; }
+  /* escalation decision cards */
+  .card { background: var(--panel); border: 1px solid var(--accent2);
+          border-radius: 10px; padding: 12px 14px; margin: 10px 14px; }
+  .card.answered { border-color: var(--line); opacity: 0.6; }
+  .card .topic { display: inline-block; background: var(--in);
+          border-radius: 5px; padding: 1px 8px; color: var(--accent);
+          font-size: 13px; margin-bottom: 6px; }
+  .card .q { font-size: 15px; margin: 4px 0 8px; }
+  .card .meta { color: var(--dim); font-size: 13px; margin-bottom: 8px; }
+  .card .reply { display: flex; gap: 8px; }
+  .card .reply input { flex: 1; background: var(--panel2);
+          border: 1px solid var(--line); color: var(--text);
+          border-radius: 8px; padding: 8px 10px; font-size: 14px; }
+  .card .reply button { background: var(--accent2); border: none;
+          color: #1d1812; border-radius: 8px; padding: 0 16px; cursor: pointer; }
+  .card .answer { background: var(--out); border-radius: 8px;
+          padding: 8px 10px; font-size: 14px; }
+  #esc-list { flex: 1; overflow-y: auto; display: none; }
+  #threads { overflow-y: auto; flex: 1; }
+  .th { padding: 10px 14px; cursor: pointer; border-bottom: 1px solid var(--line); }
+  .th:hover { background: var(--panel2); }
+  .th.sel { background: var(--panel2); border-left: 3px solid var(--accent); }
+  .th.gray { opacity: 0.45; }
+  .th .name { font-weight: 600; font-size: 16px; }
+  .th .name .badge, #hinfo .hname .badge { margin-left: 12px; }
+  .th .edit { color: var(--dim); font-size: 13px; margin-left: 8px;
+              cursor: pointer; opacity: 0; }
+  .th:hover .edit { opacity: 1; }
+  .th .edit:hover { color: var(--accent); }
+  .th .badges { display: flex; gap: 4px; flex-wrap: wrap; margin: 8px 0; }
+  .th.dragging { opacity: 0.4; }
+  .th.dragover { box-shadow: inset 0 2px 0 var(--accent); }
+  #filter { width: 100%; box-sizing: border-box; background: var(--in); border: none;
+    border-bottom: 1px solid var(--line); color: var(--text); padding: 8px 14px;
+    font-size: 14px; outline: none; }
+  #filter::placeholder { color: var(--dim); }
+  .th .meta { color: var(--dim); font-size: 13px; display: flex; gap: 8px; }
+  .th .meta.label { color: var(--accent); opacity: 0.9; white-space: nowrap;
+                    overflow: hidden; text-overflow: ellipsis; display: block; }
+  .badge.model { color: #c9b89f; border-color: #786b5a; }
+  .badge { border: 1px solid var(--line); border-radius: 4px; padding: 0 6px;
+           font-size: 12px; color: var(--dim); white-space: nowrap;
+           display: inline-block; }
+  .badge.watch { color: #9dc183; border-color: #9dc183; }
+  .badge.act { color: #1d1812; background: #9dc183; border-color: #9dc183;
+               font-weight: 700; }
+  .badge.escb { color: #1d1812; background: var(--accent); border-color: var(--accent);
+                font-weight: 700; }
+  .th .preview { color: var(--dim); font-size: 13px; margin-top: 3px;
+                 display: -webkit-box; -webkit-line-clamp: 2;
+                 -webkit-box-orient: vertical; overflow: hidden; }
+  .th .preview b { color: var(--text); opacity: 0.8; font-weight: 600; }
+  .badge.squad { color: var(--accent); border-color: var(--accent2); }
+  .badge.proj { color: #a3c9c7; border-color: #5a7877; }
+  .badge.chld { color: #c9a2d0; border-color: #7a5f80; }
+  .badge.orch { color: #e0b56a; border-color: #8a6d3f; }
+  .badge.boot { color: #1d1812; background: var(--accent2); border-color: var(--accent2);
+    cursor: pointer; font-weight: 600; }
+  .badge.unhide { color: var(--accent); border-color: var(--accent); cursor: pointer; }
+  .hiddenhead { padding: 10px 14px; color: var(--dim); font-size: 13px;
+    cursor: pointer; border-bottom: 1px solid var(--line); user-select: none; }
+  .hiddenhead:hover { color: var(--text); }
+  .th .sweep { color: var(--dim); font-size: 13px; margin-left: 6px; cursor: pointer;
+    opacity: 0; float: right; }
+  .th:hover .sweep { opacity: 1; }
+  .th .sweep:hover { color: var(--accent); }
+  .escblk { border: 1px solid var(--line); border-radius: 10px; margin: 10px 12px;
+    overflow: hidden; }
+  .escblk .bhead { display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+    cursor: pointer; background: var(--panel2); user-select: none; }
+  .escblk .bhead .cnt { margin-left: auto; color: var(--dim); font-size: 12px; }
+  .escblk .card { margin: 8px; }
+  .card .chead { display: flex; align-items: center; gap: 8px; cursor: pointer;
+    flex-wrap: wrap; }
+  .card .chead .num { color: var(--dim); font-size: 12px; }
+  .card .chead .meta { margin: 0 0 0 auto; }
+  .chev { color: var(--dim); width: 14px; display: inline-block; }
+  .escfbar { margin: 10px 12px 0; padding: 8px 12px; border: 1px dashed var(--accent2);
+    border-radius: 8px; color: var(--dim); cursor: pointer; font-size: 13px; }
+  #resp-acc { margin: 4px 12px 8px; }
+  #resp-acc .rhead { color: var(--dim); font-size: 12px; cursor: pointer;
+    padding: 6px 0; user-select: none; }
+  #resp-acc .rhead:hover { color: var(--text); }
+  #resp-acc .rrow { color: var(--dim); font-size: 13px; border-left: 2px solid var(--line);
+    padding: 6px 10px; margin: 6px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  #resp-acc .rmore { color: var(--accent); cursor: pointer; white-space: nowrap; }
+  .badge.chan { cursor: pointer; }
+  .badge.voice { cursor: pointer; }
+  .badge.rowmic { cursor: pointer; }
+  .badge.rowmic:hover { color: var(--accent); border-color: var(--accent); }
+  .badge.voice.von { color: #1d1812; background: #9dc183; border-color: #9dc183;
+                     font-weight: 700; }
+  .badge.chan:hover { color: var(--accent); border-color: var(--accent); }
+  /* in-UI popover — replaces every browser prompt()/alert(); solid bg for
+     eye comfort, closes on outside click or Esc */
+  #pop { position: fixed; z-index: 40; background: var(--panel2);
+         border: 1px solid var(--accent2); border-radius: 10px;
+         padding: 12px; box-shadow: 0 6px 24px rgba(0,0,0,0.5); }
+  #pop .title { font-size: 14px; color: var(--text); margin-bottom: 8px; }
+  #pop .hint { font-size: 12px; color: var(--dim); margin-top: 8px; }
+  #pop .row { display: flex; gap: 6px; flex-wrap: wrap; }
+  #pop .row.spr { margin-top: 8px; flex-wrap: nowrap; }
+  #pop { max-height: 86vh; overflow-y: auto; }
+  .spsel { flex: 1; min-width: 0; background: var(--in); border: 1px solid var(--line);
+    color: var(--text); border-radius: 6px; padding: 7px 10px; font-size: 14px;
+    max-width: 82vw; font-family: inherit; }
+  .spsel.flt { flex: 0 0 38%; }
+  textarea.spsel { resize: vertical; min-height: 84px; }
+  .spchk { display: flex; align-items: center; gap: 8px; color: var(--dim);
+    font-size: 13px; cursor: pointer; }
+  .spchk input { accent-color: var(--accent); }
+  .spmic { flex: 0 0 46px; align-self: stretch; background: var(--in);
+    border: 1px solid var(--line); border-radius: 6px; font-size: 19px;
+    cursor: pointer; color: var(--text); }
+  .spmic:hover { border-color: var(--accent); }
+  #pop button { background: var(--in); border: 1px solid var(--line);
+                color: var(--text); border-radius: 8px; padding: 8px 12px;
+                font-size: 15px; cursor: pointer; min-width: 40px; }
+  #pop button:hover { border-color: var(--accent); color: var(--accent); }
+  #pop button.on { border-color: var(--accent); color: var(--accent); }
+  #main { flex: 1; display: flex; flex-direction: column; }
+  #head { padding: 10px 18px; border-bottom: 1px solid var(--line);
+          background: var(--panel); font-size: 17px; display: flex;
+          align-items: center; gap: 10px; flex-wrap: wrap; min-height: 52px; }
+  #head .cwd { color: var(--dim); font-size: 13px; }
+  #head .hlabel { color: var(--accent); font-size: 14px; }
+  #hinfo { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; }
+  #hinfo .hname { font-size: 18px; }
+  #hinfo .hbadges { display: flex; flex-wrap: wrap; gap: 5px; }
+  #hinfo .hstatus { color: var(--accent); font-size: 14px; white-space: nowrap;
+                    overflow: hidden; text-overflow: ellipsis; }
+  #hinfo .hcwd { color: var(--dim); font-size: 12px; }
+  .badge.ctx { color: #c9a35f; border-color: #8a6f3f; }
+  #gear { margin-left: auto; background: none; border: 1px solid var(--line);
+          color: var(--dim); border-radius: 8px; font-size: 17px;
+          padding: 4px 12px; cursor: pointer; }
+  #gear:hover { color: var(--accent); border-color: var(--accent); }
+  /* settings modal */
+  #overlay { position: fixed; inset: 0; background: rgba(20,16,12,0.7);
+             display: flex; align-items: center; justify-content: center;
+             z-index: 20; }
+  #modal { background: var(--panel); border: 1px solid var(--accent2);
+           border-radius: 12px; padding: 20px 24px; width: 520px;
+           max-height: 85vh; overflow-y: auto; }
+  #modal h2 { margin: 0 0 12px; font-size: 17px; color: var(--accent); }
+  #modal h3 { margin: 16px 0 8px; font-size: 14px; color: var(--dim);
+              text-transform: uppercase; letter-spacing: 0.5px; }
+  #modal .srow { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
+  #modal .srow label { width: 130px; font-size: 14px; }
+  #modal select { flex: 1; background: var(--panel2); color: var(--text);
+                  border: 1px solid var(--line); border-radius: 6px; padding: 6px; }
+  #modal input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--accent2); }
+  #modal .actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+  #modal .actions button { border-radius: 8px; padding: 8px 18px; cursor: pointer;
+        border: 1px solid var(--line); background: var(--panel2); color: var(--text); }
+  #modal .actions .save { background: var(--accent2); color: #1d1812; border: none; }
+  #msgs { flex: 1; overflow-y: auto; padding: 16px 18px; display: flex;
+          flex-direction: column; gap: 8px; }
+  .msg { max-width: 72%; padding: 8px 12px; border-radius: 10px; font-size: 15px; }
+  .msg .who { font-size: 12px; color: var(--dim); margin-bottom: 2px; }
+  .msg .sayit { cursor: pointer; opacity: 0.6; margin-left: 6px; }
+  .msg .sayit:hover { opacity: 1; }
+  .msg.in  { background: var(--in); align-self: flex-start; }
+  .msg.out { background: var(--out); align-self: flex-end; }
+  .msg.peer { background: var(--peer); align-self: flex-start; opacity: 0.75;
+              border-left: 2px solid var(--dead); }
+  #compose { display: flex; gap: 8px; padding: 12px 18px; background: var(--panel);
+             border-top: 1px solid var(--line); }
+  #box { flex: 1; background: var(--panel2); border: 1px solid var(--line);
+         color: var(--text); border-radius: 8px; padding: 10px 12px; font-size: 15px; }
+  #sendb { background: var(--accent2); border: none; color: #1d1812;
+           border-radius: 8px; padding: 0 22px; font-size: 15px; cursor: pointer; }
+  #micb { background: var(--panel2); border: 1px solid var(--line); color: var(--text);
+          border-radius: 8px; padding: 0 16px; font-size: 17px; cursor: pointer; }
+  #attachb { background: var(--panel2); border: 1px solid var(--line); color: var(--text);
+             border-radius: 8px; padding: 0 14px; font-size: 17px; cursor: pointer; }
+  #cmdb { background: var(--panel2); border: 1px solid var(--line); color: var(--accent);
+          border-radius: 8px; padding: 0 14px; font-size: 17px; cursor: pointer; }
+  /* command palette */
+  #cmdlist { max-height: 46vh; overflow-y: auto; margin: 8px 0; }
+  .cmdrow { display: flex; align-items: center; gap: 10px; padding: 9px 8px;
+            border-bottom: 1px solid var(--line); cursor: pointer; }
+  .cmdrow.selq { background: var(--in); }
+  .cmdrow .cn { font-weight: 600; color: var(--accent); min-width: 110px; }
+  .cmdrow .cd { color: var(--dim); font-size: 13px; flex: 1; overflow: hidden;
+                white-space: nowrap; text-overflow: ellipsis; }
+  .cmdrow .fav { cursor: pointer; opacity: 0.5; font-size: 16px; }
+  .cmdrow .fav.on { opacity: 1; color: var(--accent); }
+  #micb.rec { background: #8a3d2f; border-color: #b8542f; }
+  #ttsstop { display: none; position: fixed; right: 16px;
+             bottom: calc(84px + env(safe-area-inset-bottom)); z-index: 25;
+             width: 64px; height: 64px; border-radius: 32px; border: none;
+             background: var(--accent); color: #1d1812; font-size: 26px;
+             cursor: pointer; align-items: center; justify-content: center;
+             box-shadow: 0 4px 16px rgba(0,0,0,0.5); }
+  /* recording modal: two thumb-sized buttons center screen */
+  #recov { position: fixed; inset: 0; background: rgba(20,16,12,0.82);
+           /* above #pop (40): recording controls must cover the launcher */
+           display: flex; flex-direction: column; align-items: center;
+           justify-content: center; gap: 26px; z-index: 60; }
+  #recov .pulse { color: #e08a6a; font-size: 19px; letter-spacing: 1px;
+                  animation: recpulse 1.2s ease-in-out infinite; }
+  @keyframes recpulse { 50% { opacity: 0.35; } }
+  #recov .btns { display: flex; gap: 30px; }
+  #recov button { width: 120px; height: 120px; border-radius: 60px;
+                  font-size: 40px; border: none; cursor: pointer; }
+  #recov .stopb { background: #9dc183; color: #1d1812; }
+  #recov .cancelb { background: #8a3d2f; color: var(--text); }
+  #recov .lbl { font-size: 14px; color: var(--dim); margin-top: 8px;
+                text-align: center; }
+  #empty { color: var(--dim); margin: auto; }
+  #working { display: flex; gap: 5px; padding: 8px 12px; align-self: flex-start; }
+  #working span { width: 9px; height: 9px; border-radius: 5px; background: var(--accent);
+                  animation: wdot 1.2s ease-in-out infinite; }
+  #working span:nth-child(2) { animation-delay: 0.2s; }
+  #working span:nth-child(3) { animation-delay: 0.4s; }
+  #working .wdoing { width: auto; height: auto; border-radius: 0; background: none;
+    animation: none; color: var(--dim); font-size: 12px; margin-left: 6px;
+    align-self: center; }
+  @keyframes wdot { 30% { opacity: 0.25; transform: translateY(-3px); } }
+  #burger { display: none; background: none; border: 1px solid var(--line);
+            color: var(--text); border-radius: 8px; font-size: 18px;
+            padding: 4px 12px; cursor: pointer; }
+  /* phone layout: sidebar becomes a slide-over, everything full width */
+  @media (max-width: 700px) {
+    #side { position: fixed; inset: 0 15% 0 0; z-index: 15; width: auto !important;
+            max-width: none; transform: translateX(-105%);
+            transition: transform 0.18s ease; box-shadow: 4px 0 24px rgba(0,0,0,0.5); }
+    #side.open { transform: translateX(0); }
+    #divider { display: none; }
+    #burger { display: inline-block; }
+    #head { padding: 8px 10px; font-size: 15px; align-items: flex-start; }
+    #hinfo .hcwd { display: none; }  /* path is noise on the phone */
+    /* phone header: one badge row max — model, context, esc; state pill
+       lives beside the name now */
+    #hinfo .hbadges > .badge:first-child { display: none; }  /* side */
+    #hinfo .hbadges .badge:not(.model):not(.ctx):not(.escb) { display: none; }
+    #hinfo .hname { font-size: 17px; }
+    /* phone list: thumb targets, minimum vertical cost — Chris trims:
+       no title line, no channel badge, one-line preview, tight rows */
+    .th { padding: 9px 12px; }
+    .th .name { font-size: 17px; }
+    .th .badges { gap: 6px; margin: 8px 0 6px; }
+    .badge { font-size: 14px; padding: 4px 11px; border-radius: 7px; }
+    .th .meta.label { display: none; }
+    .badge.chan { display: none; }
+    .th .meta { display: none; }          /* path: noise on phone */
+    .th .preview { font-size: 13px; -webkit-line-clamp: 1; margin-top: 2px; }
+    .th .edit { opacity: 1; font-size: 16px; padding: 4px; }
+    .th .sweep { opacity: 1; font-size: 15px; padding: 4px; }
+    #msgs { padding: 10px; }
+    .msg { max-width: 92%; }
+    #modal { width: 94vw; padding: 14px; }
+    /* voice-first compose: thirds — Send | input | mic (Chris layout).
+       Focusing the input grows it and hides the mic until blur. */
+    #compose { padding: 10px 8px calc(10px + env(safe-area-inset-bottom));
+               position: sticky; bottom: 0; gap: 6px; }
+    #attachb { order: 0; flex: 0 0 52px; min-height: 56px; padding: 0; font-size: 22px; }
+    #sendb { order: 1; flex: 1 1 0; min-width: 0; font-size: 17px; min-height: 56px; padding: 0; }
+    #box   { order: 2; flex: 1 1 0; min-width: 0; font-size: 16px; padding: 0 12px; }
+    #micb  { order: 3; flex: 1 1 0; min-width: 0; font-size: 28px; min-height: 56px; padding: 0; }
+    /* only the TEXT INPUT's focus hides the mic — focus-within also fired
+       when the mic button itself took focus on tap, killing its own click */
+    #compose:has(#box:focus) #micb { display: none; }
+    #compose:has(#box:focus) #box { flex: 3 1 0; }
+  }
+</style>
+</head>
+<body>
+  <div id="side">
+    <div id="tabs">
+      <button id="tab-term" class="on">Terminals</button>
+      <button id="tab-squad">Squads</button>
+      <button id="tab-esc">Esc<span id="escbadge"></span></button>
+      <button id="spawn" title="spawn a terminal tab (Windows Terminal)">＋</button>
+    </div>
+    <input id="filter" placeholder="filter sessions…" autocomplete="off">
+    <div id="threads"></div>
+  </div>
+  <div id="divider" title="drag to resize"></div>
+  <div id="main">
+    <div id="head"><button id="burger" title="threads">☰</button><span id="hinfo">ping hub</span><button id="gear" title="settings">⚙</button></div>
+    <div id="msgs"><div id="empty">select a thread — pings only, both directions</div></div>
+    <div id="esc-list"></div>
+    <button id="ttsstop" title="stop speech / skip to next">⏹</button>
+    <div id="compose">
+      <button id="cmdb" title="star command palette">✳</button>
+      <button id="attachb" title="attach an image">📎</button>
+      <input type="file" id="attachf" accept="image/*" style="display:none">
+      <input id="box" placeholder="ping as chris…" autocomplete="off">
+      <button id="sendb">Send</button>
+      <button id="micb" title="tap to record, tap again to transcribe">🎤</button>
+    </div>
+  </div>
+<script>
+let tab = "term", sel = null, selSide = "win", roster = [], hubCfg = {};
+fetch("/api/settings").then(r => r.json()).then(s => { hubCfg = s; renderList(); });
+
+// ── popover (no browser dialogs anywhere in this UI) ──────────────────────
+function showPop(x, y, html) {
+  closePop();
+  const p = document.createElement("div");
+  p.id = "pop";
+  p.innerHTML = html;
+  document.body.appendChild(p);
+  const r = p.getBoundingClientRect();
+  p.style.left = Math.min(x, window.innerWidth - r.width - 12) + "px";
+  p.style.top = Math.min(y, window.innerHeight - r.height - 12) + "px";
+  setTimeout(() => {
+    document.addEventListener("mousedown", popOutside);
+    document.addEventListener("keydown", popEsc);
+  }, 0);
+  return p;
+}
+function closePop() {
+  const p = document.getElementById("pop");
+  if (p) p.remove();
+  if (window._spDraftTimer) { clearInterval(window._spDraftTimer); window._spDraftTimer = null; }
+  document.removeEventListener("mousedown", popOutside);
+  document.removeEventListener("keydown", popEsc);
+}
+function popOutside(e) {
+  // the recording overlay lives outside #pop — its buttons must not close it
+  if (!e.target.closest("#pop") && !e.target.closest("#recov")) closePop();
+}
+function popEsc(e) { if (e.key === "Escape") closePop(); }
+
+async function loadRoster() {
+  roster = await (await fetch("/api/threads")).json();
+  if (spawnWatch) {
+    if (Date.now() > spawnWatch.until) spawnWatch = null;
+    else {
+      const norm = s => (s || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+      // a fresh session may RECLAIM a dead codename already on the board, so
+      // "new title" alone misses it — a session-id change on a known title
+      // counts as our spawn too (ocelot lesson)
+      const isNew = x => {
+        const k = x.side + ":" + x.title;
+        return !(k in spawnWatch.sids) ||
+               (x.session_id && x.session_id !== spawnWatch.sids[k]);
+      };
+      const t = spawnWatch.expectTitle
+        ? roster.find(x => x.side === spawnWatch.side &&
+            x.title === spawnWatch.expectTitle &&
+            x.session_id && x.session_id !== spawnWatch.prevSid)
+        : roster.find(x => x.side === spawnWatch.side && isNew(x) &&
+            (!x.cwd || norm(x.cwd) === norm(spawnWatch.cwd)));
+      if (t) {
+        if (spawnWatch.parent) fetch("/api/relation", { method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({ child: t.side + ":" + t.title,
+            parent: t.side + ":" + spawnWatch.parent }) });
+        spawnWatch = null;
+        sel = t.title; selSide = t.side;
+        // app-booted sessions keep a permanent card (survives hide-inactive
+        // and gone-filtering) until Chris hides it himself
+        const k = t.side + ":" + t.title;
+        if (!(hubCfg.spawn_pinned || []).includes(k)) {
+          hubCfg.spawn_pinned = [...(hubCfg.spawn_pinned || []), k];
+          fetch("/api/settings", { method: "POST",
+            headers: {"Content-Type": "application/json"}, body: JSON.stringify(hubCfg) });
+        }
+        loadThread();
+        fetch("/api/focus", { method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({ title: t.title, side: t.side }) });
+      }
+    }
+  }
+  renderList();
+  renderHeader();
+  updateWorking();
+}
+
+// pulsing indicator while the OPEN thread's session is mid-tool-run
+function updateWorking() {
+  const t = roster.find(x => x.title === sel && x.side === selSide);
+  let w = document.getElementById("working");
+  if (t && t.active && tab !== "esc") {
+    if (!w) {
+      w = document.createElement("div");
+      w.id = "working";
+      w.innerHTML = `<span></span><span></span><span></span><span class="wdoing"></span>`;
+      document.getElementById("msgs").appendChild(w);
+    }
+    w.querySelector(".wdoing").textContent = t.doing || "";
+    document.getElementById("msgs").appendChild(w);  // keep it last
+  } else if (w) w.remove();
+}
+
+function renderList() {
+  const list = document.getElementById("threads");
+  let items = roster.filter(t => tab === "squad" ? t.squad : !t.squad);
+  // hidden cards: manual hide via the pencil popup; a hidden codename whose
+  // session id CHANGED has re-registered — auto-resurrect it (Chris rule)
+  const hid = hubCfg.hidden || {};
+  let hidDirty = false;
+  for (const t of items) {
+    const k = t.side + ":" + t.title;
+    if (k in hid && t.session_id && hid[k] && t.session_id !== hid[k]) {
+      delete hid[k]; hidDirty = true;
+    }
+  }
+  if (hidDirty) {
+    hubCfg.hidden = hid;
+    fetch("/api/settings", { method: "POST",
+      headers: {"Content-Type": "application/json"}, body: JSON.stringify(hubCfg) });
+  }
+  const hiddenItems = items.filter(t => (t.side + ":" + t.title) in hid);
+  items = items.filter(t => !((t.side + ":" + t.title) in hid));
+  // spawn-pinned cards were booted from THIS app — always visible, whatever
+  // their liveness, until Chris hides them himself
+  const pinned = new Set(hubCfg.spawn_pinned || []);
+  items = items.filter(t => !t.gone || t.title === sel || pinned.has(t.side + ":" + t.title));
+  if (hubCfg.hide_inactive) items = items.filter(t =>
+    t.watching || t.active || t.title === sel || pinned.has(t.side + ":" + t.title));
+  const q = document.getElementById("filter").value.trim().toLowerCase();
+  if (q) items = items.filter(t =>
+    [t.title, t.display, t.label, t.cwd, t.status, t.side, t.model,
+     ...(t.projects || []),
+     t.last && t.last.text].filter(Boolean).join(" ").toLowerCase().includes(q));
+  // manual order: card_order (settings) wins; cards not in it keep the
+  // alphabetical roster order after the ordered ones (stable sort)
+  const ord = hubCfg.card_order || [];
+  items.sort((a, b) => {
+    const ia = ord.indexOf(a.side + ":" + a.title), ib = ord.indexOf(b.side + ":" + b.title);
+    return (ia === -1 ? 1e9 : ia) - (ib === -1 ? 1e9 : ib);
+  });
+  lastRendered = items.map(t => t.side + ":" + t.title);
+  list.innerHTML = "";
+  if (spawnWatch && tab === "term") {
+    const b = document.createElement("div");
+    b.className = "th gray";
+    b.innerHTML = `<div class="name">booting… <span class="badge">${spawnWatch.side}</span></div>
+      <div class="meta">${spawnWatch.cwd}</div>`;
+    list.appendChild(b);
+  }
+  for (const t of items) {
+    const el = document.createElement("div");
+    const statePill = t.active ? '<span class="badge act">● active</span>'
+                    : (t.watching ? '<span class="badge watch">watching</span>' : '');
+    const dead = !t.watching && !t.active;
+    const isSel = tab === "esc"
+      ? !!(escFilter && escFilter.from === t.title && escFilter.side === t.side)
+      : (t.title === sel && t.side === selSide);
+    el.className = "th" + (isSel ? " sel" : "") + (t.watching || t.active ? "" : " gray");
+    el.innerHTML = `<div class="name"><span class="sweep" title="sweep out of the list (find it under hidden)">🧹</span>${t.display || t.title} ${statePill}
+        ${(t.projects || []).map(p => `<span class="badge proj">${p.replace(/</g, "&lt;")}</span>`).join("")}
+        ${dead ? '<span class="badge boot" title="boot a fresh session onto this codename">▶ boot</span>' : ''}
+        <span class="edit" title="rename card">✎</span></div>
+      <div class="badges">
+        ${t.parent ? `<span class="badge chld">↳ ${t.parent}</span>` : ""}
+        ${t.children ? `<span class="badge orch">⌂ orchestrator · ${t.children}</span>` : ""}
+        <span class="badge">${t.side}</span>
+        ${t.model ? `<span class="badge model">${t.model}${t.effort ? "·" + t.effort : ""}</span>` : ""}
+        ${ctxBadge(t)}
+        ${t.esc ? '<span class="badge escb">esc!</span>' : ''}
+        ${t.squad ? `<span class="badge squad">${t.squad}</span>` : ''}
+        <span class="badge chan" title="channel: ctrl+alt+num">${t.channel !== "" ? "ch " + t.channel : "ch +"}</span>
+        <span class="badge voice ${hubCfg.tts_thread === t.side + ":" + t.title ? "von" : ""}" title="arm as the spoken voice channel">${hubCfg.tts_thread === t.side + ":" + t.title ? "🔊 voice" : "🔇"}</span>
+        <span class="badge rowmic" title="record straight into this session">🎤</span>
+      </div>
+      ${t.label ? `<div class="meta label">${t.label.replace(/</g, "&lt;")}</div>` : ""}
+      <div class="meta">${t.cwd || ""}</div>
+      ${t.last ? `<div class="preview"><b>${t.last.from}:</b> ${(t.last.text || "").replace(/</g, "&lt;")}</div>` : ""}`;
+    el.onclick = () => {
+      if (tab === "esc") {
+        // on the escalations tab a session card is a FILTER, not a thread jump
+        escFilter = (escFilter && escFilter.from === t.title && escFilter.side === t.side)
+          ? null : { from: t.title, side: t.side };
+        renderList(); loadEscalations();
+        document.getElementById("side").classList.remove("open");
+        return;
+      }
+      sel = t.title; selSide = t.side; renderList(); loadThread();
+      document.getElementById("box").value =
+        localStorage.getItem("draft:" + t.side + ":" + t.title) || "";
+      document.getElementById("side").classList.remove("open");
+      fetch("/api/focus", { method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ title: t.title, side: t.side }) }); };
+    el.querySelector(".sweep").onclick = async ev => {
+      ev.stopPropagation();
+      const k = t.side + ":" + t.title;
+      (hubCfg.hidden = hubCfg.hidden || {})[k] = t.session_id || "";
+      hubCfg.spawn_pinned = (hubCfg.spawn_pinned || []).filter(x => x !== k);
+      if (sel === t.title && selSide === t.side) sel = null;
+      await fetch("/api/settings", { method: "POST",
+        headers: {"Content-Type": "application/json"}, body: JSON.stringify(hubCfg) });
+      renderList();
+    };
+    const key = t.side + ":" + t.title;
+    el.draggable = !q;   // reordering under a filter would scramble hidden cards
+    el.addEventListener("dragstart", e => { dragKey = key;
+      el.classList.add("dragging"); e.dataTransfer.effectAllowed = "move"; });
+    el.addEventListener("dragend", () => { dragKey = null;
+      document.querySelectorAll(".th.dragging,.th.dragover")
+        .forEach(x => x.classList.remove("dragging", "dragover")); });
+    el.addEventListener("dragover", e => {
+      if (dragKey && dragKey !== key) { e.preventDefault(); el.classList.add("dragover"); } });
+    el.addEventListener("dragleave", () => el.classList.remove("dragover"));
+    el.addEventListener("drop", e => { e.preventDefault(); dropCard(key); });
+    el.querySelector(".edit").onclick = ev => {
+      ev.stopPropagation();
+      const p = showPop(ev.clientX, ev.clientY,
+        `<div class="title">display name for <b>${t.title}</b></div>
+         <div class="row" style="flex-wrap:nowrap">
+           <input id="ti" style="flex:1;background:var(--in);border:1px solid var(--line);
+             color:var(--text);border-radius:6px;padding:7px 10px;font-size:14px;min-width:260px"
+             value="${(t.display || "").replace(/"/g, "&quot;")}"
+             placeholder="${t.title}">
+           <button id="tsave">Save</button><button id="thide">Hide</button></div>
+         <div class="row" style="margin-top:8px"><select id="tparent" class="spsel">
+           <option value="">no parent — unassigned</option>
+           ${roster.filter(x => x.side === t.side && x.title !== t.title)
+                   .map(x => `<option value="${x.title}" ${t.parent === x.title ? "selected" : ""}>child of ${x.title}</option>`).join("")}
+         </select></div>
+         <div class="hint">display only — relays keep routing to ${t.title}; empty = show the codename · Hide tucks this card under the hidden section (auto-returns if the codename re-registers) · parent refolds this session live</div>`);
+      p.querySelector("#tparent").onchange = async ev2 => {
+        await fetch("/api/relation", { method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({ child: t.side + ":" + t.title,
+            parent: ev2.target.value ? t.side + ":" + ev2.target.value : "" }) });
+        loadRoster();
+      };
+      p.querySelector("#thide").onclick = async () => {
+        (hubCfg.hidden = hubCfg.hidden || {})[t.side + ":" + t.title] = t.session_id || "";
+        if (sel === t.title && selSide === t.side) sel = null;
+        await fetch("/api/settings", { method: "POST",
+          headers: {"Content-Type": "application/json"}, body: JSON.stringify(hubCfg) });
+        closePop(); renderList();
+      };
+      const inp = p.querySelector("#ti");
+      inp.focus(); inp.select();
+      const save = async () => {
+        await fetch("/api/title", { method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({ side: t.side, title: t.title,
+            session_id: t.session_id || "", text: inp.value }) });
+        closePop(); loadRoster();
+      };
+      p.querySelector("#tsave").onclick = save;
+      inp.addEventListener("keydown", e => { if (e.key === "Enter") save(); });
+    };
+    el.querySelector(".rowmic").onclick = ev => {
+      ev.stopPropagation();
+      // rapid-fire mode: record for this row WITHOUT entering the thread —
+      // the transcript routes to it and you stay right here in the list
+      startRec({ title: t.title, side: t.side });
+    };
+    el.querySelector(".voice").onclick = async ev => {
+      ev.stopPropagation();
+      const k = t.side + ":" + t.title;
+      hubCfg.tts_thread = hubCfg.tts_thread === k ? "" : k;   // tap again = off
+      if (hubCfg.tts_thread) hubCfg.tts_on = true;
+      await fetch("/api/settings", { method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(hubCfg) });
+      renderList();
+    };
+    el.querySelector(".chan").onclick = ev => {
+      ev.stopPropagation();
+      const taken = {};
+      for (const r of roster) if (r.channel !== "") taken[r.channel] = r.title;
+      const digits = [..."0123456789"].map(d =>
+        `<button data-slot="${d}" title="${taken[d] ? "steals from " + taken[d] : "free"}">${d}${taken[d] ? "·" : ""}</button>`
+      ).join("");
+      const p = showPop(ev.clientX, ev.clientY,
+        `<div class="title">bind <b>${t.title}</b> (${t.side}) to a channel</div>
+         <div class="row">${digits}</div>
+         <div class="hint">ctrl+alt+num N becomes its PTT key · dotted = taken (assigning steals)</div>`);
+      p.querySelectorAll("button[data-slot]").forEach(b => b.onclick = async () => {
+        await fetch("/api/channel", { method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({ title: t.title, side: t.side, slot: b.dataset.slot }) });
+        closePop();
+        loadRoster();
+      });
+    };
+    const bootB = el.querySelector(".boot");
+    if (bootB) bootB.onclick = async ev => {
+      // resurrect a dead codename: fresh session, same title (BASE_RELAY_AS),
+      // same workspace — the thread here continues seamlessly
+      ev.stopPropagation();
+      spawnWatch = { side: t.side, cwd: t.cwd || "", until: Date.now() + 180000,
+                     expectTitle: t.title, prevSid: t.session_id || "" };
+      await fetch("/api/spawn", { method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ side: t.side, cwd: t.cwd || "", title: t.title }) });
+      renderList();
+    };
+    list.appendChild(el);
+  }
+  if (hiddenItems.length) {
+    const h = document.createElement("div");
+    h.className = "hiddenhead";
+    h.textContent = `${showHidden ? "▾" : "▸"} hidden (${hiddenItems.length})`;
+    h.onclick = () => { showHidden = !showHidden; renderList(); };
+    list.appendChild(h);
+    if (showHidden) for (const t of hiddenItems) {
+      const el = document.createElement("div");
+      el.className = "th gray";
+      el.innerHTML = `<div class="name">${t.display || t.title}
+        <span class="badge">${t.side}</span><span class="badge unhide">unhide</span></div>`;
+      el.onclick = async () => {
+        delete hubCfg.hidden[t.side + ":" + t.title];
+        await fetch("/api/settings", { method: "POST",
+          headers: {"Content-Type": "application/json"}, body: JSON.stringify(hubCfg) });
+        renderList();
+      };
+      list.appendChild(el);
+    }
+  }
+}
+
+// opus = 1m: hub spawns force opus[1m], and live pills (gossip at 486k) prove
+// even the older opus sessions run the 1m window — transcripts don't mark it
+const CTX_MAX = { fable: 1000000, opus: 1000000, sonnet: 200000 };
+function ctxBadge(t) {
+  if (!t.ctx) return "";
+  const max = CTX_MAX[t.model] || 200000;
+  const pct = Math.min(999, Math.round(100 * t.ctx / max));
+  const k = n => n >= 1e6 ? (n / 1e6).toFixed(1) + "m" : Math.round(n / 1000) + "k";
+  return `<span class="badge ctx" title="context: ${t.ctx.toLocaleString()} of ${max.toLocaleString()} tokens">${pct}% · ${k(t.ctx)}/${k(max)}</span>`;
+}
+
+function renderHeader() {
+  if (!sel || tab === "esc") return;
+  const t = roster.find(x => x.title === sel && x.side === selSide) || {};
+  const hstate = t.active ? '<span class="badge act">● active</span>'
+               : (t.watching ? '<span class="badge watch">watching</span>' : '');
+  document.getElementById("hinfo").innerHTML =
+    `<div class="hname"><b>${t.display || sel}</b> ${hstate}</div>
+     <div class="hbadges">
+       <span class="badge">${selSide}</span>
+       ${t.model ? `<span class="badge model">${t.model}${t.effort ? "·" + t.effort : ""}</span>` : ""}
+       ${ctxBadge(t)}
+       ${t.esc ? '<span class="badge escb">esc!</span>' : ''}
+       ${t.squad ? `<span class="badge squad">${t.squad}</span>` : ''}
+       ${t.channel !== "" && t.channel !== undefined ? `<span class="badge">ch ${t.channel}</span>` : ''}
+     </div>
+     ${t.label ? `<div class="hstatus">${t.label.replace(/</g, "&lt;")}</div>` : ''}
+     ${t.cwd ? `<div class="hcwd">${t.cwd}</div>` : ''}`;
+}
+
+async function loadThread() {
+  if (!sel) return;
+  renderHeader();
+  const msgs = await (await fetch(`/api/thread?title=${encodeURIComponent(sel)}&side=${selSide}`)).json();
+  const box = document.getElementById("msgs");
+  const wasOpen = respOpen;
+  box.innerHTML = "";
+  for (const m of msgs) addMsg(m);
+  addRespAccordion(box, wasOpen);
+  box.scrollTop = box.scrollHeight;
+}
+
+// terminal mirror: the session's own responses, low-key behind an accordion —
+// quiet sessions still surface what they say in the terminal (Chris ask)
+let respOpen = false, respFor = "";
+function addRespAccordion(box, open) {
+  if (respFor !== selSide + ":" + sel) { open = false; respFor = selSide + ":" + sel; }
+  const acc = document.createElement("div");
+  acc.id = "resp-acc";
+  acc.innerHTML = `<div class="rhead">▸ terminal responses</div>
+    <div class="rbody" style="display:none"></div>`;
+  const rh = acc.querySelector(".rhead"), rb = acc.querySelector(".rbody");
+  const fillRows = async () => {
+    rb.innerHTML = '<div class="rrow">loading…</div>';
+    const rows = await (await fetch(`/api/responses?title=${encodeURIComponent(sel)}&side=${selSide}`)).json();
+    rb.innerHTML = rows.length ? "" : '<div class="rrow">no terminal responses found</div>';
+    for (const r of rows) {
+      const d = document.createElement("div");
+      d.className = "rrow";
+      const tx = r.text.replace(/</g, "&lt;");
+      d.innerHTML = tx.length > 240
+        ? `<span class="short">${tx.slice(0, 240)}…</span><span class="full" style="display:none">${tx}</span><span class="rmore"> more ▸</span>`
+        : tx;
+      const mr = d.querySelector(".rmore");
+      if (mr) mr.onclick = () => {
+        const s = d.querySelector(".short"), f = d.querySelector(".full");
+        const o = f.style.display === "none";
+        f.style.display = o ? "inline" : "none";
+        s.style.display = o ? "none" : "inline";
+        mr.textContent = o ? " less ◂" : " more ▸";
+      };
+      rb.appendChild(d);
+    }
+  };
+  const setOpen = o => {
+    respOpen = o;
+    rh.textContent = (o ? "▾" : "▸") + " terminal responses";
+    rb.style.display = o ? "block" : "none";
+    if (o) fillRows();
+  };
+  rh.onclick = () => setOpen(rb.style.display === "none");
+  if (open) setOpen(true);
+  box.appendChild(acc);
+}
+
+function addMsg(m) {
+  const box = document.getElementById("msgs");
+  const el = document.createElement("div");
+  el.className = "msg " + (m.peer ? "peer" : (m.dir === "out" ? "out" : "in"));
+  const text = (m.summary || "").replace(/</g, "&lt;");
+  // inline image render for [image] <path> pings
+  const im = (m.summary || "").match(/^\[image\] (\S+[\\/]images[\\/](\S+?[\\/][^\s]+))( — (.*))?$/);
+  const LIMIT = 280;
+  let body;
+  if (im) {
+    const rel = im[2].replace(/\\/g, "/");
+    body = `<img src="/img/${rel}" style="max-width:100%;min-width:48px;min-height:32px;background:rgba(255,255,255,0.08);border-radius:8px;display:block">` +
+           (im[4] ? `<div>${im[4].replace(/</g, "&lt;")}</div>` : "");
+  } else
+  if (text.length > LIMIT) {
+    body = `<span class="short">${text.slice(0, LIMIT)}…</span><span class="full" style="display:none">${text}</span>
+            <a class="more" style="color:var(--accent);cursor:pointer;font-size:13px"> more ▸</a>`;
+  } else {
+    body = text;
+  }
+  const speakable = m.dir === "in" && !m.peer && (m.summary || "").trim();
+  el.innerHTML = `<div class="who">${m.from} · ${m.created || m.ts || ""}` +
+    (speakable ? ` <span class="sayit" title="read this aloud">🔊</span>` : "") +
+    `</div>` + body;
+  const sayit = el.querySelector(".sayit");
+  if (sayit) sayit.onclick = () => {
+    fetch("/api/tts", { method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ text: m.summary, voice: hubCfg.tts_voice || "af_heart" }) })
+      .then(r => r.ok ? r.blob() : null)
+      .then(b => { if (b) { ttsQueue.push(b); ttsNext(); } });
+  };
+  const more = el.querySelector(".more");
+  if (more) more.onclick = () => {
+    const s = el.querySelector(".short"), f = el.querySelector(".full");
+    const open = f.style.display === "none";
+    f.style.display = open ? "inline" : "none";
+    s.style.display = open ? "none" : "inline";
+    more.textContent = open ? " less ◂" : " more ▸";
+  };
+  box.appendChild(el);
+  box.scrollTop = box.scrollHeight;
+}
+
+document.getElementById("burger").onclick = () =>
+  document.getElementById("side").classList.toggle("open");
+document.getElementById("filter").oninput = () => renderList();
+
+// ── manual card order (drag-drop; persisted in settings.card_order) ───────
+let dragKey = null, lastRendered = [], showHidden = false;
+async function dropCard(targetKey) {
+  if (!dragKey || dragKey === targetKey) return;
+  const seq = lastRendered.filter(k => k !== dragKey);
+  seq.splice(seq.indexOf(targetKey), 0, dragKey);
+  // visible sequence first, then any previously ordered keys not on screen
+  hubCfg.card_order = [...seq,
+    ...(hubCfg.card_order || []).filter(k => !seq.includes(k))];
+  renderList();
+  await fetch("/api/settings", { method: "POST",
+    headers: {"Content-Type": "application/json"}, body: JSON.stringify(hubCfg) });
+}
+let wsCache = null, spawnWatch = null;
+let spawnMeta = {};   // per-(side|workspace) launcher dropdown cache
+document.getElementById("spawn").onclick = async ev => {
+  if (!wsCache) wsCache = await (await fetch("/api/workspaces")).json();
+  let meta = { projects: [], handoffs: [], forks: [] };
+  // form state survives closing the modal (and reloads) until Launch or Clear
+  const FKEY = "spawn-form";
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(FKEY) || "{}"); } catch {}
+  let side = saved.side === "wsl" ? "wsl" : "win";
+  const p = showPop(ev.clientX, ev.clientY,
+    `<div class="title">new session</div>
+     <div class="row" id="sp-sides">
+       <button data-side="win" class="on">Windows</button>
+       <button data-side="wsl">WSL</button>
+     </div>
+     <div class="row spr"><select id="sp-ws" class="spsel" title="workspace"></select></div>
+     <div class="row spr"><select id="sp-parent" class="spsel" title="parent to report to"></select></div>
+     <div class="row spr"><label class="spchk"><input type="checkbox" id="sp-boot-ping" checked>
+       auto report to parent on boot (uncheck when a ping is already inbound for it)</label></div>
+     <div class="row spr"><label class="spchk"><input type="checkbox" id="sp-gated">
+       <b>gated build</b> — parent becomes the orchestrator (required), child boots per
+       PROCESS-gated-build.md with a pinned builder codename, parent is pinged instantly</label></div>
+     <div class="row spr"><input id="sp-pf" class="spsel flt" placeholder="filter projects…"><select id="sp-proj" class="spsel"></select></div>
+     <div class="row spr"><input id="sp-hf" class="spsel flt" placeholder="filter handoffs…"><select id="sp-hand" class="spsel" multiple size="4" title="ctrl/tap-select several — each becomes a HANDOFF line"></select></div>
+     <div class="row spr"><input id="sp-ff" class="spsel flt" placeholder="filter forks…"><select id="sp-fork" class="spsel" multiple size="4" title="ctrl/tap-select several — each becomes a FORK line"></select></div>
+     <div class="row spr"><textarea id="sp-prompt" class="spsel" rows="5"
+       placeholder="initial prompt (optional — apostrophes and any punctuation are safe)"></textarea><button id="sp-mic" class="spmic" title="dictate into the prompt">🎤</button></div>
+     <div class="row spr"><button id="sp-launch" style="flex:1">Launch</button><button id="sp-clear" title="reset the form">Clear</button></div>
+     <div class="hint">bypass permissions, folder pre-trusted — zero prompts · project / parent / handoff / fork become the boot briefing · the new thread appears and selects itself here</div>`);
+  const opt = (v, label) => `<option value="${(v || "").replace(/"/g, "&quot;")}">${label}</option>`;
+  const fillSel = (id, none, rows, q) => {
+    const el = p.querySelector(id), multi = el.multiple;
+    const cur = multi ? [...el.selectedOptions].map(o => o.value) : [el.value];
+    const list = (rows || []).filter(r =>
+      !q || (r.name + " " + (r.path || "")).toLowerCase().includes(q));
+    el.innerHTML = (multi ? "" : opt("", none)) +
+      list.map(r => opt(r.path || r.name, r.name)).join("");
+    [...el.options].forEach(o => { if (cur.includes(o.value)) o.selected = true; });
+  };
+  const fillLists = () => {
+    fillSel("#sp-proj", "no project tag", meta.projects,
+            p.querySelector("#sp-pf").value.trim().toLowerCase());
+    fillSel("#sp-hand", "no handoff", meta.handoffs,
+            p.querySelector("#sp-hf").value.trim().toLowerCase());
+    fillSel("#sp-fork", "no fork", meta.forks,
+            p.querySelector("#sp-ff").value.trim().toLowerCase());
+  };
+  const loadMeta = async () => {
+    // dropdowns are SCOPED to the selected workspace — repull on any change
+    const ws = p.querySelector("#sp-ws").value;
+    const key = side + "|" + ws;
+    if (!spawnMeta[key])
+      spawnMeta[key] = await (await fetch("/api/spawn-meta?side=" + side +
+        "&cwd=" + encodeURIComponent(ws))).json();
+    meta = spawnMeta[key];
+    fillLists();
+  };
+  const fill = () => {
+    const wsSel = p.querySelector("#sp-ws"), curWs = wsSel.value;
+    wsSel.innerHTML = (wsCache[side] || []).map(w =>
+      opt(w.path, w.name + " — " + w.path)).join("");
+    if ([...wsSel.options].some(o => o.value === curWs)) wsSel.value = curWs;
+    p.querySelector("#sp-parent").innerHTML = opt("", "no parent") +
+      opt("chris", "chris (you)") +
+      roster.filter(t => t.side === side && (t.watching || t.active))
+            .map(t => opt(t.title, "reports to " + t.title)).join("");
+    return loadMeta();
+  };
+  const saveForm = () => localStorage.setItem(FKEY, JSON.stringify({
+    side, ws: p.querySelector("#sp-ws").value, parent: p.querySelector("#sp-parent").value,
+    boot: p.querySelector("#sp-boot-ping").checked,
+    gated: p.querySelector("#sp-gated").checked,
+    pf: p.querySelector("#sp-pf").value, proj: p.querySelector("#sp-proj").value,
+    hf: p.querySelector("#sp-hf").value,
+    hand: [...p.querySelector("#sp-hand").selectedOptions].map(o => o.value),
+    ff: p.querySelector("#sp-ff").value,
+    fork: [...p.querySelector("#sp-fork").selectedOptions].map(o => o.value),
+    prompt: p.querySelector("#sp-prompt").value }));
+  ["#sp-pf", "#sp-hf", "#sp-ff"].forEach(id => p.querySelector(id).oninput = fillLists);
+  p.querySelector("#sp-ws").addEventListener("change", loadMeta);
+  p.querySelectorAll("#sp-sides button").forEach(b => b.onclick = () => {
+    side = b.dataset.side;
+    p.querySelectorAll("#sp-sides button").forEach(x => x.classList.toggle("on", x === b));
+    fill(); saveForm();
+  });
+  p.querySelectorAll("#sp-sides button").forEach(x =>
+    x.classList.toggle("on", x.dataset.side === side));
+  p.querySelector("#sp-pf").value = saved.pf || "";
+  p.querySelector("#sp-hf").value = saved.hf || "";
+  p.querySelector("#sp-ff").value = saved.ff || "";
+  const setv = (id, v) => { const el = p.querySelector(id);
+    if (v && [...el.options].some(o => o.value === v)) el.value = v; };
+  // restore order matters: workspace first (meta is scoped to it), then the
+  // scoped dropdowns once loadMeta has resolved
+  p.querySelector("#sp-ws").innerHTML = (wsCache[side] || []).map(w =>
+    opt(w.path, w.name + " — " + w.path)).join("");
+  setv("#sp-ws", saved.ws);
+  await fill();
+  setv("#sp-parent", saved.parent);
+  setv("#sp-proj", saved.proj);
+  const setmv = (id, vals) => { const el = p.querySelector(id);
+    (Array.isArray(vals) ? vals : vals ? [vals] : []).forEach(v => {
+      const o = [...el.options].find(o => o.value === v);
+      if (o) o.selected = true; }); };
+  setmv("#sp-hand", saved.hand); setmv("#sp-fork", saved.fork);
+  p.querySelector("#sp-prompt").value = saved.prompt || "";
+  p.querySelector("#sp-boot-ping").checked = saved.boot !== false;
+  p.querySelector("#sp-gated").checked = !!saved.gated;
+  // hotkey-dictated draft (server-side): pull on open AND poll while the
+  // modal is up, so dictation typed mid-open (or a missed pull) still lands
+  const pullDraft = () => fetch("/api/spawn-draft").then(r => r.json()).then(d => {
+    const t = p.querySelector("#sp-prompt");
+    if (d.text && d.text.trim() && t) {
+      t.value = (t.value ? t.value + " " : "") + d.text.trim();
+      saveForm();
+      fetch("/api/spawn-draft", { method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ clear: true }) });
+    }
+  }).catch(() => {});
+  pullDraft();
+  if (window._spDraftTimer) clearInterval(window._spDraftTimer);
+  window._spDraftTimer = setInterval(pullDraft, 3000);
+  p.querySelector("#sp-mic").onclick = () => startRec({ label: "initial prompt",
+    into: text => {
+      const t = document.getElementById("sp-prompt");
+      if (t) {
+        t.value = (t.value ? t.value + " " : "") + text;
+        saveForm();
+      } else {
+        // modal closed mid-recording: persist into the saved form anyway
+        let s = {};
+        try { s = JSON.parse(localStorage.getItem(FKEY) || "{}"); } catch {}
+        s.prompt = ((s.prompt || "") + " " + text).trim();
+        localStorage.setItem(FKEY, JSON.stringify(s));
+      }
+    } });
+  p.querySelectorAll("select,input,textarea").forEach(el => {
+    el.addEventListener("input", saveForm);
+    el.addEventListener("change", saveForm);
+  });
+  p.querySelector("#sp-clear").onclick = () => {
+    localStorage.removeItem(FKEY);
+    fetch("/api/spawn-draft", { method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ clear: true }) });
+    ["#sp-pf", "#sp-hf", "#sp-ff", "#sp-prompt",
+     "#sp-parent", "#sp-proj"].forEach(id => p.querySelector(id).value = "");
+    ["#sp-hand", "#sp-fork"].forEach(id =>
+      [...p.querySelector(id).options].forEach(o => { o.selected = false; }));
+    p.querySelector("#sp-boot-ping").checked = true;
+    p.querySelector("#sp-gated").checked = false;
+    fill();
+  };
+  p.querySelector("#sp-launch").onclick = async () => {
+    const cwd = p.querySelector("#sp-ws").value;
+    const gated = p.querySelector("#sp-gated").checked;
+    const parent = p.querySelector("#sp-parent").value;
+    if (gated && !parent) {   // a gated build without an orchestrator is nothing
+      const ps = p.querySelector("#sp-parent");
+      ps.style.borderColor = "var(--accent)";
+      ps.focus();
+      return;
+    }
+    // watch the roster: the first thread on this side we have not seen yet
+    // (cwd-matched when the entry carries one) becomes the selected thread
+    spawnWatch = { side, cwd, until: Date.now() + 180000,
+                   parent: parent && parent !== "chris" ? parent : "",
+                   sids: Object.fromEntries(roster.map(t =>
+                     [t.side + ":" + t.title, t.session_id || ""])) };
+    const resp = await (await fetch("/api/spawn", { method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ side, cwd, gated,
+        prompt: p.querySelector("#sp-prompt").value,
+        parent,
+        report_boot: p.querySelector("#sp-boot-ping").checked,
+        project: p.querySelector("#sp-proj").value,
+        handoffs: [...p.querySelector("#sp-hand").selectedOptions].map(o => o.value),
+        forks: [...p.querySelector("#sp-fork").selectedOptions].map(o => o.value) }) })).json();
+    if (resp.title && spawnWatch) {   // pinned codename: watch for IT exactly
+      spawnWatch.expectTitle = resp.title;
+      spawnWatch.prevSid = "";
+    }
+    localStorage.removeItem(FKEY);
+    closePop();
+    renderList();
+  };
+};
+document.getElementById("tab-term").onclick = e => switchTab("term", e.target);
+document.getElementById("tab-squad").onclick = e => switchTab("squad", e.target);
+document.getElementById("tab-esc").onclick = e => switchTab("esc", e.currentTarget);
+function switchTab(t, btn) {
+  tab = t;
+  document.querySelectorAll("#tabs button").forEach(b => b.classList.remove("on"));
+  btn.classList.add("on");
+  const esc = t === "esc";
+  document.getElementById("esc-list").style.display = esc ? "block" : "none";
+  document.getElementById("msgs").style.display = esc ? "none" : "flex";
+  document.getElementById("compose").style.display = esc ? "none" : "flex";
+  document.getElementById("hinfo").textContent = esc ? "escalations — decisions waiting on you" : "ping hub";
+  if (esc) loadEscalations(); else renderList();
+}
+
+// ── escalation decision cards: ONE collapsible block per session, its
+// escalations appended inside, each individually collapsible (Chris spec) ──
+let escFilter = null, escOpen = {}, escCardOpen = {};
+async function loadEscalations() {
+  const cards = await (await fetch("/api/escalations")).json();
+  const pending = cards.filter(c => c.status === "pending");
+  document.getElementById("escbadge").textContent = pending.length || "";
+  const list = document.getElementById("esc-list");
+  list.innerHTML = "";
+  if (!cards.length) {
+    list.innerHTML = '<div id="empty" style="margin:40px auto;text-align:center;color:var(--dim)">no escalations — build sessions ping chris with ESCALATION[topic]: …</div>';
+    return;
+  }
+  if (escFilter) {
+    const bar = document.createElement("div");
+    bar.className = "escfbar";
+    bar.innerHTML = `showing only <b>${escFilter.from}</b> (${escFilter.side}) — tap here (or the card again) to clear`;
+    bar.onclick = () => { escFilter = null; renderList(); loadEscalations(); };
+    list.appendChild(bar);
+  }
+  const groups = new Map();
+  for (const c of cards) {
+    const k = c.side + ":" + c.from;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(c);
+  }
+  const pendOf = k => groups.get(k).filter(c => c.status === "pending").length;
+  const keys = [...groups.keys()]
+    .filter(k => !escFilter || k === escFilter.side + ":" + escFilter.from)
+    .sort((a, b) => pendOf(b) - pendOf(a));
+  if (!keys.length) {
+    const d = document.createElement("div");
+    d.style.cssText = "margin:40px auto;text-align:center;color:var(--dim)";
+    d.textContent = `no escalations from ${escFilter.from}`;
+    list.appendChild(d);
+  }
+  for (const k of keys) {
+    const g = groups.get(k);
+    g.sort((a, b) => (a.status === "pending" ? 0 : 1) - (b.status === "pending" ? 0 : 1) ||
+                     String(b.ts || "").localeCompare(String(a.ts || "")));
+    const pend = pendOf(k);
+    if (!(k in escOpen)) escOpen[k] = pend > 0;
+    const blk = document.createElement("div");
+    blk.className = "escblk";
+    const head = document.createElement("div");
+    head.className = "bhead";
+    head.innerHTML = `<span class="chev">${escOpen[k] ? "▾" : "▸"}</span>
+      <b>${g[0].from}</b><span class="badge">${g[0].side}</span>
+      ${pend ? `<span class="badge escb">${pend} pending</span>` : '<span class="badge">all handled</span>'}
+      <span class="cnt">${g.length} escalation${g.length > 1 ? "s" : ""}</span>`;
+    head.onclick = () => { escOpen[k] = !escOpen[k]; loadEscalations(); };
+    blk.appendChild(head);
+    if (escOpen[k]) g.forEach((c, i) => blk.appendChild(escCard(c, i)));
+    list.appendChild(blk);
+  }
+}
+
+function escCard(c, i) {
+  const done = c.status !== "pending";
+  if (!(c.id in escCardOpen)) escCardOpen[c.id] = !done;
+  const open = escCardOpen[c.id];
+  const el = document.createElement("div");
+  el.className = "card inblk" + (done ? " answered" : "");
+  const resumeCmd = c.session_id
+    ? `claude --dangerously-skip-permissions --resume ${c.session_id}` : "";
+  el.innerHTML = `<div class="chead"><span class="chev">${open ? "▾" : "▸"}</span>
+      <span class="num">#${i + 1}</span>
+      <span class="topic">${(c.topic || "?").replace(/</g, "&lt;")}</span>
+      <span class="meta">${age(c.ts)}${c.status === "answered" ? " · answered " + age(c.answered_ts) : ""}${c.status === "dismissed" ? " · dismissed " + age(c.answered_ts) : ""}</span></div>` +
+    (!open ? "" :
+      `<div class="q">${(c.question || "").replace(/</g, "&lt;")}</div>` +
+      (c.status === "answered"
+        ? `<div class="answer">${(c.reply || "").replace(/</g, "&lt;")}</div>`
+        : (c.status === "dismissed" ? "" :
+           `<div class="reply"><input placeholder="your call…"><button class="ans">Answer</button>
+            <button class="dis" title="archive without answering">Dismiss</button>
+            ${c.session_id ? `<button class="res" title="reopen the asking session as a terminal tab">Resume</button>
+            <button class="cpy" title="copy: ${resumeCmd}">Copy cmd</button>` : ""}</div>`)));
+  el.querySelector(".chead").onclick = ev => {
+    if (ev.target.closest("input,button")) return;
+    escCardOpen[c.id] = !open;
+    loadEscalations();
+  };
+  if (open && !done) {
+    const input = el.querySelector("input");
+    const go = async () => {
+      if (!input.value.trim()) return;
+      await fetch("/api/escalation-reply", { method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ id: c.id, msg: input.value.trim() }) });
+      loadEscalations();
+    };
+    el.querySelector(".ans").onclick = go;
+    input.addEventListener("keydown", e => { if (e.key === "Enter") go(); });
+    el.querySelector(".dis").onclick = async () => {
+      await fetch("/api/escalation-dismiss", { method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ id: c.id }) });
+      loadEscalations();
+    };
+    const res = el.querySelector(".res");
+    if (res) res.onclick = () => fetch("/api/escalation-resume", { method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ id: c.id }) });
+    const cpy = el.querySelector(".cpy");
+    if (cpy) cpy.onclick = async () => {
+      await navigator.clipboard.writeText(resumeCmd);
+      cpy.textContent = "Copied ✓";
+      setTimeout(() => { cpy.textContent = "Copy cmd"; }, 1500);
+    };
+  }
+  return el;
+}
+
+function age(ts) {
+  if (!ts) return "";
+  const s = Math.max(0, (Date.now() - new Date(ts).getTime()) / 1000);
+  if (s < 90) return Math.round(s) + "s ago";
+  if (s < 5400) return Math.round(s / 60) + "m ago";
+  if (s < 129600) return Math.round(s / 3600) + "h ago";
+  return Math.round(s / 86400) + "d ago";
+}
+
+async function send() {
+  const box = document.getElementById("box");
+  if (!sel || !box.value.trim()) return;
+  const r = await fetch("/api/send", { method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({ title: sel, side: selSide, msg: box.value.trim() }) });
+  if (r.ok) { box.value = ""; localStorage.removeItem("draft:" + selSide + ":" + sel); }
+}
+document.getElementById("sendb").onclick = send;
+// Slack-style drafts: unsent text is keyed per thread and survives navigation
+// and reloads indefinitely — cleared only by a successful send
+document.getElementById("box").addEventListener("input", () => {
+  if (sel) localStorage.setItem("draft:" + selSide + ":" + sel,
+    document.getElementById("box").value);
+});
+
+// ── star command palette: search / favorites / multi-select / send ────────
+document.getElementById("cmdb").onclick = async () => {
+  if (!sel) return;
+  const cmds = await (await fetch("/api/commands")).json();
+  const favs = new Set(hubCfg.cmd_favs || []);
+  const picked = new Set();
+  const ov = document.createElement("div");
+  ov.id = "overlay";
+  ov.innerHTML = `<div id="modal">
+    <h2>star commands → ${sel}</h2>
+    <input id="cmdq" placeholder="filter…" style="width:100%;background:var(--panel2);
+      border:1px solid var(--line);color:var(--text);border-radius:8px;padding:9px 12px;font-size:15px">
+    <div id="cmdlist"></div>
+    <div class="actions"><button class="cancel">Cancel</button>
+      <button class="save" id="cmdsend" disabled>Send 0</button></div>
+  </div>`;
+  document.body.appendChild(ov);
+  const listEl = ov.querySelector("#cmdlist");
+  const sendBtn = ov.querySelector("#cmdsend");
+  const render = q => {
+    const term = (q || "").toLowerCase();
+    const rows = cmds.filter(c => !term || c.name.includes(term) ||
+                                   (c.description || "").toLowerCase().includes(term));
+    rows.sort((a, b) => (favs.has(b.name) - favs.has(a.name)) || a.name.localeCompare(b.name));
+    listEl.innerHTML = rows.map(c =>
+      `<div class="cmdrow ${picked.has(c.name) ? "selq" : ""}" data-n="${c.name}">
+         <span class="cn">*${c.name}</span><span class="cd">${(c.description || "").replace(/</g, "&lt;")}</span>
+         <span class="fav ${favs.has(c.name) ? "on" : ""}" title="favorite">★</span>
+       </div>`).join("");
+    listEl.querySelectorAll(".cmdrow").forEach(r => {
+      const n = r.dataset.n;
+      r.onclick = () => {
+        picked.has(n) ? picked.delete(n) : picked.add(n);
+        sendBtn.disabled = !picked.size;
+        sendBtn.textContent = "Send " + picked.size;
+        render(ov.querySelector("#cmdq").value);
+      };
+      r.querySelector(".fav").onclick = async ev => {
+        ev.stopPropagation();
+        favs.has(n) ? favs.delete(n) : favs.add(n);
+        hubCfg.cmd_favs = [...favs];
+        await fetch("/api/settings", { method: "POST",
+          headers: {"Content-Type": "application/json"}, body: JSON.stringify(hubCfg) });
+        render(ov.querySelector("#cmdq").value);
+      };
+    });
+  };
+  render("");
+  ov.querySelector("#cmdq").oninput = e => render(e.target.value);
+  ov.querySelector("#cmdq").focus();
+  ov.onclick = e => { if (e.target === ov) ov.remove(); };
+  ov.querySelector(".cancel").onclick = () => ov.remove();
+  sendBtn.onclick = async () => {
+    // one ping carrying all picked commands — base stacks *a *b like a prompt
+    const msg = [...picked].map(n => "*" + n).join(" ");
+    await fetch("/api/send", { method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ title: sel, side: selSide, msg }) });
+    ov.remove();
+  };
+};
+
+// ── image attachments: upload -> hub/images/<codename>/ -> ping with refs ──
+document.getElementById("attachb").onclick = () => {
+  if (!sel) return;
+  document.getElementById("attachf").click();
+};
+document.getElementById("attachf").onchange = async ev => {
+  const f = ev.target.files[0];
+  ev.target.value = "";
+  if (!f || !sel) return;
+  const note = document.getElementById("box").value.trim();
+  const btn = document.getElementById("attachb");
+  btn.textContent = "…";
+  try {
+    const r = await (await fetch(
+      `/api/attach?title=${encodeURIComponent(sel)}&side=${selSide}&note=${encodeURIComponent(note)}`,
+      { method: "POST", headers: {"Content-Type": f.type || "image/jpeg"}, body: f })).json();
+    if (r.ok) document.getElementById("box").value = "";
+  } finally { btn.textContent = "📎"; }
+};
+
+// ── phone mic → desktop Parakeet STT (big stop/cancel modal) ─────────────
+let rec = null, chunks = [], recCancelled = false, recTarget = null;
+document.getElementById("micb").onclick = () =>
+  startRec(sel ? { title: sel, side: selSide } : null);
+async function startRec(target) {
+  const btn = document.getElementById("micb");
+  recTarget = target;
+  if (rec && rec.state === "recording") return;  // modal owns stop/cancel
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    chunks = [];
+    recCancelled = false;
+    rec = new MediaRecorder(stream);
+    rec.ondataavailable = e => chunks.push(e.data);
+    rec.onstop = async () => {
+      const ov = document.getElementById("recov");
+      if (ov) ov.remove();
+      btn.classList.remove("rec");
+      stream.getTracks().forEach(t => t.stop());
+      if (recCancelled) { btn.textContent = "🎤"; ttsNext(); return; }
+      btn.textContent = "…";
+      const blob = new Blob(chunks, { type: rec.mimeType });
+      try {
+        const r = await (await fetch("/api/stt", { method: "POST", body: blob })).json();
+        const box = document.getElementById("box");
+        if (r.ok && r.text) {
+          const text = r.text.trim();
+          if (recTarget && recTarget.into) {
+            recTarget.into(text);
+          } else if (hubCfg.voice_autosend !== false && recTarget) {
+            // desktop-PTT semantics: speak -> the ping fires at the target
+            await fetch("/api/send", { method: "POST",
+              headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({ title: recTarget.title, side: recTarget.side, msg: text }) });
+          } else {
+            box.value = (box.value ? box.value + " " : "") + text;
+          }
+        } else if (r.ok && !r.text) {
+          box.placeholder = "heard nothing — mic caught no speech, try again";
+        } else if (!r.ok) box.placeholder = "stt failed: " + (r.detail || "");
+      } finally { btn.textContent = "🎤"; ttsNext(); }
+    };
+    // recording starts: silence any speech immediately, hold the queue
+    if (ttsPlaying) { const a = ttsPlaying; ttsPlaying = null; a.pause(); }
+    rec.start();
+    btn.classList.add("rec");
+    const ov = document.createElement("div");
+    ov.id = "recov";
+    ov.innerHTML = `<div class="pulse">● recording${target ? " → " + (target.title || target.label || "") : ""}</div>
+      <div class="btns">
+        <div><button class="stopb" title="stop and send">■</button><div class="lbl">send</div></div>
+        <div><button class="cancelb" title="cancel">✕</button><div class="lbl">cancel</div></div>
+      </div>`;
+    document.body.appendChild(ov);
+    ov.querySelector(".stopb").onclick = () => rec.stop();
+    ov.querySelector(".cancelb").onclick = () => { recCancelled = true; rec.stop(); };
+  } catch (e) {
+    btn.textContent = "🎤";
+    document.getElementById("box").placeholder = "mic blocked: " + e.message;
+  }
+}
+document.getElementById("box").addEventListener("keydown", e => {
+  if (e.key === "Enter") send();
+});
+
+const es = new EventSource("/api/events");
+es.onmessage = ev => {
+  const d = JSON.parse(ev.data);
+  if (d.event === "roster") loadRoster();
+  if (d.event === "message" && d.title === sel && d.side === selSide) addMsg(d);
+  if (d.event === "escalation") refreshEscBadge();
+  // spoken replies: the armed thread's inbound pings get read aloud (queued)
+  if (d.event === "message" && hubCfg.tts_on && !d.peer && d.dir === "in"
+      && hubCfg.tts_thread === d.side + ":" + d.title && d.summary) {
+    fetch("/api/tts", { method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ text: d.summary, voice: hubCfg.tts_voice || "af_heart" }) })
+      .then(r => r.ok ? r.blob() : null)
+      .then(b => { if (b) { ttsQueue.push(b); ttsNext(); } });
+  }
+};
+
+// ── speech queue + big stop control ──────────────────────────────────────
+let ttsQueue = [], ttsPlaying = null;
+function ttsNext() {
+  // never talk over an open mic — queue holds until recording ends
+  if (rec && rec.state === "recording") return;
+  if (ttsPlaying || !ttsQueue.length) return;
+  const a = new Audio(URL.createObjectURL(ttsQueue.shift()));
+  ttsPlaying = a;
+  document.getElementById("ttsstop").style.display = "flex";
+  a.onended = a.onerror = () => {
+    ttsPlaying = null;
+    if (!ttsQueue.length) document.getElementById("ttsstop").style.display = "none";
+    ttsNext();
+  };
+  a.play().catch(() => { ttsPlaying = null; ttsNext(); });
+}
+document.getElementById("ttsstop").onclick = () => {
+  // skip to the next queued message; tap again to silence everything
+  if (ttsPlaying) { const a = ttsPlaying; ttsPlaying = null; a.pause(); }
+  if (!ttsQueue.length) document.getElementById("ttsstop").style.display = "none";
+  ttsNext();
+};
+
+async function refreshEscBadge() {
+  const cards = await (await fetch("/api/escalations")).json();
+  const n = cards.filter(c => c.status === "pending").length;
+  document.getElementById("escbadge").textContent = n || "";
+  if (tab === "esc") loadEscalations();
+}
+
+// ── settings modal (gear) ─────────────────────────────────────────────────
+const ACTIONS = [["start", "mic open"], ["finish", "mic close"], ["send", "delivered"],
+                 ["receive", "reply spoken"], ["cancel", "cancel / fail"]];
+document.getElementById("gear").onclick = async () => {
+  const [s, wavs, voices] = await Promise.all([
+    (await fetch("/api/settings")).json(),
+    (await fetch("/api/soundlist")).json(),
+    (await fetch("/api/voices")).json(),
+  ]);
+  const snd = s.sounds || {};
+  const opts = w => ['<option value="default">default tone</option>']
+    .concat(wavs.map(n => {
+      const v = "C:/Windows/Media/" + n;
+      return `<option value="${v}" ${w === v ? "selected" : ""}>${n.replace(".wav", "")}</option>`;
+    })).join("");
+  const rows = ACTIONS.map(([k, lbl]) =>
+    `<div class="srow"><input type="checkbox" data-k="${k}" ${snd[k] === false ? "" : "checked"}>
+     <label>${lbl}</label><select data-w="${k}">${opts(snd[k + "_wav"] || "default")}</select></div>`).join("");
+  const ov = document.createElement("div");
+  ov.id = "overlay";
+  ov.innerHTML = `<div id="modal">
+    <h2>settings</h2>
+    <h3>sound effects — per action</h3>${rows}
+    <h3>list</h3>
+    <div class="srow"><input type="checkbox" id="s-hide" ${s.hide_inactive ? "checked" : ""}>
+      <label style="width:auto">hide inactive sessions (not watching, not active)</label></div>
+    <div class="srow"><input type="checkbox" id="s-voice" ${s.voice_autosend !== false ? "checked" : ""}>
+      <label style="width:auto">voice sends the ping immediately (uncheck = review in box first)</label></div>
+    <h3>text to speech (kokoro — spoken replies, phone included)</h3>
+    <div class="srow"><input type="checkbox" id="s-tts" ${s.tts_on ? "checked" : ""}>
+      <label style="width:auto">speak inbound pings aloud</label></div>
+    <div class="srow"><label>voice</label><select id="s-ttsvoice">
+      ${voices.map(v => `<option ${(s.tts_voice || "af_heart") === v ? "selected" : ""}>${v}</option>`).join("")}
+    </select></div>
+    <div class="srow"><label>speak thread</label><select id="s-ttsthread">
+      <option value="">— none —</option>
+      ${roster.filter(t => !t.gone).map(t => {
+        const k = t.side + ":" + t.title;
+        return `<option value="${k}" ${s.tts_thread === k ? "selected" : ""}>${t.display || t.title} (${t.side}${t.channel !== "" ? " · ch " + t.channel : ""})</option>`;
+      }).join("")}
+    </select></div>
+    <h3>new terminal defaults (＋ button)</h3>
+    <div class="srow"><label>model</label><select id="s-model">
+      ${["fable", "opus", "sonnet"].map(m => `<option ${s.spawn_model === m ? "selected" : ""}>${m}</option>`).join("")}
+    </select></div>
+    <div class="srow"><label>effort</label><select id="s-effort">
+      ${["low", "medium", "high", "xhigh", "max"].map(e => `<option ${(s.spawn_effort || "xhigh") === e ? "selected" : ""}>${e}</option>`).join("")}
+    </select></div>
+    <div class="actions"><button class="cancel">Cancel</button><button class="save">Save</button></div>
+  </div>`;
+  document.body.appendChild(ov);
+  ov.onclick = e => { if (e.target === ov) ov.remove(); };
+  ov.querySelector(".cancel").onclick = () => ov.remove();
+  ov.querySelector(".save").onclick = async () => {
+    const sounds = {};
+    ov.querySelectorAll("input[data-k]").forEach(cb => { sounds[cb.dataset.k] = cb.checked; });
+    ov.querySelectorAll("select[data-w]").forEach(se => { sounds[se.dataset.w + "_wav"] = se.value; });
+    hubCfg = { sounds,
+      hide_inactive: ov.querySelector("#s-hide").checked,
+      voice_autosend: ov.querySelector("#s-voice").checked,
+      tts_on: ov.querySelector("#s-tts").checked,
+      tts_voice: ov.querySelector("#s-ttsvoice").value,
+      tts_thread: ov.querySelector("#s-ttsthread").value,
+      spawn_model: ov.querySelector("#s-model").value,
+      spawn_effort: ov.querySelector("#s-effort").value };
+    await fetch("/api/settings", { method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(hubCfg) });
+    ov.remove();
+    renderList();
+  };
+};
+
+// ── resizable sidebar (width persists) ────────────────────────────────────
+const sideEl = document.getElementById("side");
+const saved = localStorage.getItem("hub-side-width");
+if (saved) sideEl.style.width = saved + "px";
+const divider = document.getElementById("divider");
+divider.addEventListener("mousedown", e => {
+  e.preventDefault();
+  divider.classList.add("dragging");
+  const move = ev => {
+    const w = Math.min(640, Math.max(220, ev.clientX));
+    sideEl.style.width = w + "px";
+  };
+  const up = () => {
+    divider.classList.remove("dragging");
+    localStorage.setItem("hub-side-width", parseInt(sideEl.style.width));
+    document.removeEventListener("mousemove", move);
+    document.removeEventListener("mouseup", up);
+  };
+  document.addEventListener("mousemove", move);
+  document.addEventListener("mouseup", up);
+});
+
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
+
+loadRoster();
+refreshEscBadge();
+setInterval(loadRoster, 5000);
+setInterval(refreshEscBadge, 10000);
+</script>
+</body>
+</html>
