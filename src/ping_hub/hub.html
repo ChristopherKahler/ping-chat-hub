@@ -189,7 +189,14 @@
                 font-size: 15px; cursor: pointer; min-width: 40px; }
   #pop button:hover { border-color: var(--accent); color: var(--accent); }
   #pop button.on { border-color: var(--accent); color: var(--accent); }
-  #main { flex: 1; display: flex; flex-direction: column; }
+  /* min-width:0 is load-bearing, not tidiness. A flex item defaults to
+     min-width:auto, which forbids it shrinking below its own min-content
+     width — so ONE nowrap descendant (the status line) made #main 603px wide
+     on a 412px phone, pushed every right-aligned own-message off screen, and
+     let scrollIntoView strand the page scrolled right with no way back.
+     Unconditional on purpose: inside the phone media query it left 768px
+     (landscape / tablet) still overflowing by 197px. */
+  #main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
   #head { padding: 10px 18px; border-bottom: 1px solid var(--line);
           background: var(--panel); font-size: 17px; display: flex;
           align-items: center; gap: 10px; flex-wrap: wrap; min-height: 52px; }
@@ -236,7 +243,11 @@
   #modal .actions .save { background: var(--accent2); color: #1d1812; border: none; }
   #msgs { flex: 1; overflow-y: auto; padding: 16px 18px; display: flex;
           flex-direction: column; gap: 8px; }
-  .msg { max-width: 72%; padding: 8px 12px; border-radius: 10px; font-size: 15px; }
+  /* overflow-wrap: a token with no break opportunity (a long hash, a base64
+     blob) would otherwise scroll #msgs sideways. #resp-acc already does this;
+     this brings .msg in line. */
+  .msg { max-width: 72%; padding: 8px 12px; border-radius: 10px; font-size: 15px;
+         overflow-wrap: anywhere; }
   .msg .who { font-size: 12px; color: var(--dim); margin-bottom: 2px; }
   .msg .sayit { cursor: pointer; opacity: 0.6; margin-left: 6px; }
   .msg .sayit:hover { opacity: 1; }
@@ -339,6 +350,12 @@
     #hinfo .hbadges > .badge:first-child { display: none; }  /* side */
     #hinfo .hbadges .badge:not(.model):not(.ctx):not(.escb) { display: none; }
     #hinfo .hname { font-size: 17px; }
+    /* the status is the most useful line on the phone, so it wraps to two
+       lines here instead of ellipsizing at one. Its desktop nowrap was what
+       set #main's min-content width; with #main{min-width:0} that no longer
+       overflows, but two readable lines beat one truncated one. */
+    #hinfo .hstatus { white-space: normal; display: -webkit-box;
+                      -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
     /* phone list: thumb targets, minimum vertical cost — Chris trims:
        no title line, no channel badge, one-line preview, tight rows */
     .th { padding: 9px 12px; }
@@ -354,25 +371,25 @@
     #msgs { padding: 10px; }
     .msg { max-width: 92%; }
     #modal { width: 94vw; padding: 14px; }
-    /* voice-first compose: thirds — Send | input | mic (Chris layout).
-       Focusing the input grows it and hides the mic until blur. */
+    /* TWO LINES on the phone: the input owns row one, the four controls share
+       row two. The old single-row "thirds" plan budgeted for four children and
+       the row has FIVE — #cmdb was never given an order — so two fixed buttons
+       plus gaps ate 115px and the text field was left 108px at 412 and 78px at
+       320. A message box you cannot read what you typed in is not a text box. */
     #compose { padding: 10px 8px calc(10px + env(safe-area-inset-bottom));
-               position: sticky; bottom: 0; gap: 6px; }
-    /* the thirds layout needs them to GROW, so the desktop fixed height and
+               position: sticky; bottom: 0; gap: 6px; flex-wrap: wrap; }
+    /* the row-two buttons need to GROW, so the desktop fixed height and
        flex:0 0 auto are both overridden here rather than inherited */
     #compose > button { height: 56px; }
-    #attachb { order: 0; flex: 0 0 52px; min-height: 56px; padding: 0; font-size: 22px; }
-    #sendb { order: 1; flex: 1 1 0; min-width: 0; font-size: 17px; min-height: 56px; padding: 0; }
     /* padding is vertical here, unlike the old single-line input: a textarea
        puts its text at the TOP of the box, so zero padding left it hard
        against the border instead of centred like the buttons beside it */
-    #box   { order: 2; flex: 1 1 0; min-width: 0; font-size: 16px;
-             padding: 16px 12px; min-height: 56px; max-height: 30vh; }
-    #micb  { order: 3; flex: 1 1 0; min-width: 0; font-size: 28px; min-height: 56px; padding: 0; }
-    /* only the TEXT INPUT's focus hides the mic — focus-within also fired
-       when the mic button itself took focus on tap, killing its own click */
-    #compose:has(#box:focus) #micb { display: none; }
-    #compose:has(#box:focus) #box { flex: 3 1 0; }
+    #box    { order: 0; flex: 1 0 100%; min-width: 0; font-size: 16px;
+              padding: 14px 12px; min-height: 56px; max-height: 30vh; }
+    #cmdb   { order: 1; flex: 0 0 52px; min-height: 56px; padding: 0; font-size: 22px; }
+    #attachb{ order: 2; flex: 0 0 52px; min-height: 56px; padding: 0; font-size: 22px; }
+    #sendb  { order: 3; flex: 1 1 0; min-width: 0; font-size: 17px; min-height: 56px; padding: 0; }
+    #micb   { order: 4; flex: 1 1 0; min-width: 0; font-size: 28px; min-height: 56px; padding: 0; }
   }
 </style>
 </head>
