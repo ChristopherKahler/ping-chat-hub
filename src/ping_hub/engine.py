@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from ping_hub import config
+from ping_hub import config, proc
 
 CFG = config.get()
 
@@ -539,7 +539,7 @@ class Engine:
         if slot not in tuple("0123456789"):
             return False, "slot must be 0-9"
         try:
-            r = subprocess.run(
+            r = proc.run(
                 [CFG.cx_ptt.python, str(CX_SLOT), title, slot, "--side", side],
                 capture_output=True, text=True, timeout=15, encoding="utf-8", errors="replace",
             )
@@ -769,7 +769,7 @@ class Engine:
             except OSError as e:
                 return False, f"wsl bridge unreachable: {e}"
         try:
-            r = subprocess.run(
+            r = proc.run(
                 [CFG.paths.base_bin, "relay", "ping", "--to", title,
                  "--from", sender, "--msg", msg],
                 capture_output=True, text=True, timeout=15, encoding="utf-8", errors="replace",
@@ -785,7 +785,7 @@ class Engine:
         (Docker Desktop config). `wsl hostname -I` is the authority."""
         import subprocess
         try:
-            r = subprocess.run(
+            r = proc.run(
                 ["wsl", "hostname", "-I"], capture_output=True, text=True, timeout=10,
             )
             out = (r.stdout or "").replace("\x00", "").strip()
@@ -893,6 +893,57 @@ class Engine:
             "summary": ping.get("summary", ""),
             "created": ping.get("created", ""),
         }, side="wsl")
+
+    # ── backfill (pings delivered while the hub was not running) ─────────
+    def _marks(self) -> tuple[dict[str, set], dict[str, str], str]:
+        """Per-thread slugs and newest timestamp, plus a global floor.
+
+        The floor is the newest entry anywhere in the journals: a thread the
+        hub has never journaled must not drag in months of pre-hub history
+        just because its own mark is empty.
+        """
+        newest: dict[str, str] = {}
+        floor = ""
+        for side in ("win", "wsl"):
+            for jp in (HUB_DIR / "threads" / side).glob("*.jsonl"):
+                key = f"{side}:{jp.stem}"
+                try:
+                    with open(jp, encoding="utf-8") as fh:
+                        for line in fh:
+                            try:
+                                created = json.loads(line).get("created", "")
+                            except (json.JSONDecodeError, AttributeError):
+                                continue
+                            if created > newest.get(key, ""):
+                                newest[key] = created
+                            if created > floor:
+                                floor = created
+                except OSError:
+                    continue
+        return self._seen, newest, floor
+
+    def backfill(self) -> int:
+        """Append pings base recorded but the hub never saw. Runs once at boot.
+
+        Never prunes and never rewrites: base's graph is missing records the
+        journal still holds, so anything two-way would destroy real history.
+        """
+        from ping_hub import backfill as bf
+        seen, newest, floor = self._marks()
+        written = 0
+        stores = bf.graph_stores(CFG)
+        for side, store in zip(("win", "wsl"), stores):
+            records = bf.read_pings(store)
+            if not records:
+                continue
+            for entry in bf.plan(CFG, seen, newest, side, records, floor):
+                thread = entry.pop("_thread")
+                self.append(thread, entry, side=side)
+                written += 1
+        if written:
+            print(f"backfilled {written} ping(s) the hub was down for",
+                  flush=True)
+        return written
 
     # ── loops ────────────────────────────────────────────────────────────
     def run(self) -> None:

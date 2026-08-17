@@ -29,6 +29,8 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+
+from ping_hub import proc
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -91,7 +93,7 @@ class Probe:
     @staticmethod
     def _run(cmd: list[str], timeout: int = 15) -> str:
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True,
+            r = proc.run(cmd, capture_output=True, text=True,
                                timeout=timeout, encoding="utf-8",
                                errors="replace")
         except (OSError, subprocess.TimeoutExpired):

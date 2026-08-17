@@ -25,6 +25,8 @@ import json
 import os
 import shutil
 import subprocess
+
+from ping_hub import proc
 import sys
 import tarfile
 import tempfile
@@ -125,7 +127,7 @@ def make_venv(path: Path, packages: list[str], log=_log) -> Path:
     if not py.exists():
         raise InstallError(f"venv build produced no interpreter at {py}")
     log(f"installing {' '.join(packages)}")
-    r = subprocess.run([str(py), "-m", "pip", "install", "-q", *packages],
+    r = proc.run([str(py), "-m", "pip", "install", "-q", *packages],
                        capture_output=True, text=True)
     if r.returncode != 0:
         raise InstallError(f"pip failed in {path.name}:\n{(r.stdout + r.stderr)[-800:]}")

@@ -29,7 +29,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from ping_hub import config, spawn
+from ping_hub import config, proc, spawn
 from ping_hub.engine import Engine, INBOX_ROOT, HUB_TITLE
 
 CFG = config.get()
@@ -59,7 +59,7 @@ def wsl_unc_root() -> str:
 
 def register_chris() -> None:
     try:
-        subprocess.run(
+        proc.run(
             [CFG.paths.base_bin, "relay", "register", "--as", HUB_TITLE,
              "--session", CHRIS_SESSION],
             capture_output=True, text=True, timeout=15,
@@ -192,7 +192,7 @@ def _projects_cli(side: str, ws: str) -> list[dict]:
         cmd, run_cwd = ["wsl", "-e", "bash", "-lc",
                         f"cd '{ws}' && base project list"], str(Path.home())
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=20,
+        r = proc.run(cmd, capture_output=True, text=True, timeout=20,
                            cwd=run_cwd)
     except (OSError, subprocess.TimeoutExpired):
         return []
@@ -408,7 +408,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._json(_VOICES)
                     return
                 try:
-                    r = subprocess.run(
+                    r = proc.run(
                         say + ["--voices"],
                         capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace",
                     )
@@ -460,7 +460,7 @@ class Handler(BaseHTTPRequestHandler):
                 src = Path(td) / "in.webm"
                 wav = Path(td) / "out.wav"
                 src.write_bytes(blob)
-                r = subprocess.run(
+                r = proc.run(
                     [CFG.stt.ffmpeg, "-y", "-i", str(src),
                      "-ar", "16000", "-ac", "1", str(wav)],
                     capture_output=True, timeout=60,
@@ -499,7 +499,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             with tempfile.TemporaryDirectory() as td:
                 wav = Path(td) / "tts.wav"
-                r = subprocess.run(
+                r = proc.run(
                     say + ["--out", str(wav), "--voice", voice, text],
                     capture_output=True, timeout=120,
                 )
@@ -524,9 +524,19 @@ class Handler(BaseHTTPRequestHandler):
         title = (q.get("title") or [""])[0]
         side = (q.get("side") or ["win"])[0]
         note = (q.get("note") or [""])[0]
+        given = (q.get("name") or [""])[0]
         ctype = self.headers.get("Content-Type", "")
-        ext = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp",
-               "image/gif": "gif"}.get(ctype.split(";")[0], "jpg")
+        images = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp",
+                  "image/gif": "gif"}
+        is_image = ctype.split(";")[0] in images
+        if is_image:
+            ext, bucket, tag = images[ctype.split(";")[0]], "images", "image"
+        else:
+            # a dropped PDF or log used to be written as .jpg, because the map
+            # defaulted everything unknown to an image extension
+            ext = Path(given).suffix.lstrip(".").lower() or "bin"
+            ext = re.sub(r"[^\w]", "", ext)[:12] or "bin"
+            bucket, tag = "files", "file"
         if not title:
             self._json({"ok": False, "detail": "title required"}, 400)
             return
@@ -536,18 +546,26 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "detail": "too large"}, 413)
                 return
             blob = self.rfile.read(n)
-            d = HUB_DIR / "images" / title
+            d = HUB_DIR / bucket / title
             d.mkdir(parents=True, exist_ok=True)
-            fname = f"att-{int(time.time() * 1000)}.{ext}"
+            stem = re.sub(r"[^\w.-]", "-", Path(given).stem)[:40]
+            fname = f"att-{int(time.time() * 1000)}{'-' + stem if stem else ''}.{ext}"
             (d / fname).write_bytes(blob)
             path = str(d / fname)
-            msg = f"[image] {path}" + (f" — {note}" if note else "")
-            r = subprocess.run(
+            # a drop stores the file and hands the path back for Chris to
+            # compose around; the paperclip pings straight away. Doing both
+            # would send the same attachment twice.
+            if (q.get("send") or ["1"])[0] == "0":
+                self._json({"ok": True, "path": path, "kind": tag,
+                            "detail": "stored"})
+                return
+            msg = f"[{tag}] {path}" + (f" — {note}" if note else "")
+            r = proc.run(
                 ["base", "relay", "ping", "--to", title, "--from", HUB_TITLE,
                  "--msg", msg, "--refs", path],
                 capture_output=True, text=True, timeout=15, encoding="utf-8", errors="replace",
             )
-            self._json({"ok": r.returncode == 0,
+            self._json({"ok": r.returncode == 0, "path": path, "kind": tag,
                         "detail": (r.stdout + r.stderr).strip()[:200]})
         except Exception as e:
             self._json({"ok": False, "detail": str(e)}, 500)
@@ -780,6 +798,11 @@ def main() -> None:
     # its sentinel, which would move state under the live cockpit
     if CFG.hub.register_standing_title:
         register_chris()
+    # before the loops start: recover anything delivered while we were down
+    try:
+        engine.backfill()
+    except Exception as e:            # never block a boot on a repair step
+        print(f"backfill skipped: {e}", flush=True)
     engine.run()
     if CFG.hub.register_standing_title:
         threading.Thread(target=touch_chris_sentinel, daemon=True).start()

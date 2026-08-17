@@ -5,6 +5,15 @@
 <title>ping hub</title>
 <link rel="manifest" href="/manifest.json">
 <link rel="icon" href="/icon-192.png">
+<!-- iOS ignores the web manifest for home-screen installs: without these four
+     Safari gives a browser-chrome tab with a screenshot for an icon, and the
+     standalone app frame never appears. Android reads the manifest and never
+     needed them, which is why their absence went unnoticed. -->
+<link rel="apple-touch-icon" href="/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Ping Hub">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#201b15">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <style>
@@ -88,6 +97,25 @@
                  display: -webkit-box; -webkit-line-clamp: 2;
                  -webkit-box-orient: vertical; overflow: hidden; }
   .th .preview b { color: var(--text); opacity: 0.8; font-weight: 600; }
+  /* plumbing, not a session: reads quieter than a dead card, and deliberately
+     exempt from the gray "gone quiet" treatment that invites worry */
+  .reprow { display: flex; gap: 6px; align-items: center; margin: 5px 0; }
+  .reprow input[type=text], .reprow .rfrom, .reprow .rto {
+    flex: 1 1 0; min-width: 0; background: var(--panel2);
+    border: 1px solid var(--line); color: var(--text);
+    border-radius: 6px; padding: 7px 9px; font-size: 14px; }
+  .reprow .arrow { color: var(--dim); flex: 0 0 auto; }
+  .reprow .rdel { background: none; border: 1px solid var(--line); color: var(--dim);
+    border-radius: 6px; padding: 4px 9px; cursor: pointer; flex: 0 0 auto; }
+  .reprow .rdel:hover { color: var(--accent); border-color: var(--accent); }
+  .repadd { background: var(--panel2); border: 1px solid var(--line);
+    color: var(--accent); border-radius: 6px; padding: 7px 12px;
+    cursor: pointer; font-size: 14px; margin-top: 6px; }
+  #modal .hint { color: var(--dim); font-size: 13px; margin: 2px 0 8px; }
+  .badge.ghostb { color: var(--dim); border-color: var(--line);
+                  border-style: dashed; }
+  .th.ghost .name { opacity: 0.72; }
+  .th.ghost .meta, .th.ghost .badges { opacity: 0.6; }
   .badge.squad { color: var(--accent); border-color: var(--accent2); }
   .badge.proj { color: #a3c9c7; border-color: #5a7877; }
   .badge.chld { color: #c9a2d0; border-color: #7a5f80; }
@@ -203,9 +231,20 @@
   .msg.peer { background: var(--peer); align-self: flex-start; opacity: 0.75;
               border-left: 2px solid var(--dead); }
   #compose { display: flex; gap: 8px; padding: 12px 18px; background: var(--panel);
-             border-top: 1px solid var(--line); }
+             border-top: 1px solid var(--line); align-items: flex-end;
+             position: relative; }
+  /* a textarea, not an input, so shift+enter can insert a real newline. It
+     grows with the text up to a cap and then scrolls — a long paste must not
+     push the send button off the screen. resize:none because the drag handle
+     fights the auto-grow. */
   #box { flex: 1; background: var(--panel2); border: 1px solid var(--line);
-         color: var(--text); border-radius: 8px; padding: 10px 12px; font-size: 15px; }
+         color: var(--text); border-radius: 8px; padding: 10px 12px; font-size: 15px;
+         font-family: inherit; line-height: 1.35; resize: none; overflow-y: auto;
+         min-height: 41px; max-height: 40vh; }
+  #compose.dragging { outline: 2px dashed var(--accent); outline-offset: -6px; }
+  #compose.dragging::after { content: "drop to attach"; position: absolute;
+         left: 0; right: 0; bottom: 100%; text-align: center; font-size: 13px;
+         color: var(--accent); padding-bottom: 4px; }
   #sendb { background: var(--accent2); border: none; color: #1d1812;
            border-radius: 8px; padding: 0 22px; font-size: 15px; cursor: pointer; }
   #micb { background: var(--panel2); border: 1px solid var(--line); color: var(--text);
@@ -295,7 +334,11 @@
                position: sticky; bottom: 0; gap: 6px; }
     #attachb { order: 0; flex: 0 0 52px; min-height: 56px; padding: 0; font-size: 22px; }
     #sendb { order: 1; flex: 1 1 0; min-width: 0; font-size: 17px; min-height: 56px; padding: 0; }
-    #box   { order: 2; flex: 1 1 0; min-width: 0; font-size: 16px; padding: 0 12px; }
+    /* padding is vertical here, unlike the old single-line input: a textarea
+       puts its text at the TOP of the box, so zero padding left it hard
+       against the border instead of centred like the buttons beside it */
+    #box   { order: 2; flex: 1 1 0; min-width: 0; font-size: 16px;
+             padding: 16px 12px; min-height: 56px; max-height: 30vh; }
     #micb  { order: 3; flex: 1 1 0; min-width: 0; font-size: 28px; min-height: 56px; padding: 0; }
     /* only the TEXT INPUT's focus hides the mic — focus-within also fired
        when the mic button itself took focus on tap, killing its own click */
@@ -325,7 +368,8 @@
       <button id="cmdb" title="star command palette">✳</button>
       <button id="attachb" title="attach an image">📎</button>
       <input type="file" id="attachf" accept="image/*" style="display:none">
-      <input id="box" placeholder="ping as chris…" autocomplete="off">
+      <textarea id="box" placeholder="ping as chris…" autocomplete="off"
+                rows="1"></textarea>
       <button id="sendb">Send</button>
       <button id="micb" title="tap to record, tap again to transcribe">🎤</button>
     </div>
@@ -333,6 +377,26 @@
 <script>
 let tab = "term", sel = null, selSide = "win", roster = [], hubCfg = {};
 fetch("/api/settings").then(r => r.json()).then(s => { hubCfg = s; renderList(); });
+
+// ── timestamps a person can read ──────────────────────────────────────────
+// "2:41 PM" today, "yesterday 2:41 PM", "Aug 12, 2:41 PM" older. The full
+// stamp stays in the title attribute, so nothing is actually lost.
+// Two spellings arrive here: the journal writes -0500 and base's graph writes
+// -05:00. Safari rejects the first outright, so it is normalised before Date
+// sees it — otherwise every bubble on an iPhone reads "Invalid Date".
+function when(raw) {
+  if (!raw) return "";
+  const iso = String(raw).replace(/([+-]\d{2})(\d{2})$/, "$1:$2");
+  const d = new Date(iso);
+  if (isNaN(d)) return String(raw);          // unparseable: show it as given
+  const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const day = new Date(d); day.setHours(0, 0, 0, 0);
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const days = Math.round((today - day) / 86400000);
+  if (days <= 0) return time;
+  if (days === 1) return "yesterday " + time;
+  return d.toLocaleDateString([], { month: "short", day: "numeric" }) + ", " + time;
+}
 
 // ── popover (no browser dialogs anywhere in this UI) ──────────────────────
 function showPop(x, y, html) {
@@ -476,12 +540,20 @@ function renderList() {
     const el = document.createElement("div");
     const statePill = t.active ? '<span class="badge act">● active</span>'
                     : (t.watching ? '<span class="badge watch">watching</span>' : '');
-    const dead = !t.watching && !t.active;
+    // a relay mirror: this session id is registered on both sides and the
+    // real one is elsewhere. It is plumbing, so it never offers to boot and
+    // never reads as a session that went quiet.
+    const ghost = !!t.ghost;
+    const dead = !t.watching && !t.active && !ghost;
     const isSel = tab === "esc"
       ? !!(escFilter && escFilter.from === t.title && escFilter.side === t.side)
       : (t.title === sel && t.side === selSide);
-    el.className = "th" + (isSel ? " sel" : "") + (t.watching || t.active ? "" : " gray");
-    el.innerHTML = `<div class="name"><span class="sweep" title="sweep out of the list (find it under hidden)">🧹</span>${t.display || t.title} ${statePill}
+    el.className = "th" + (isSel ? " sel" : "") + (t.watching || t.active ? "" : " gray")
+                 + (ghost ? " ghost" : "");
+    const ghostPill = ghost
+      ? '<span class="badge ghostb" title="relay mirror — this codename is registered on this side so pings route, but the session runs on the other side">◌ relay</span>'
+      : '';
+    el.innerHTML = `<div class="name"><span class="sweep" title="sweep out of the list (find it under hidden)">🧹</span>${t.display || t.title} ${ghostPill}${statePill}
         ${(t.projects || []).map(p => `<span class="badge proj">${p.replace(/</g, "&lt;")}</span>`).join("")}
         ${dead ? '<span class="badge boot" title="boot a fresh session onto this codename">▶ boot</span>' : ''}
         <span class="edit" title="rename card">✎</span></div>
@@ -755,7 +827,7 @@ function addMsg(m) {
     body = text;
   }
   const speakable = m.dir === "in" && !m.peer && (m.summary || "").trim();
-  el.innerHTML = `<div class="who">${m.from} · ${m.created || m.ts || ""}` +
+  el.innerHTML = `<div class="who">${m.from} · <span title="${(m.created || m.ts || "").replace(/"/g, "")}">${when(m.created || m.ts)}</span>` +
     (speakable ? ` <span class="sayit" title="read this aloud">🔊</span>` : "") +
     `</div>` + body;
   const sayit = el.querySelector(".sayit");
@@ -1128,7 +1200,11 @@ async function send() {
   const r = await fetch("/api/send", { method: "POST",
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify({ title: sel, side: selSide, msg: box.value.trim() }) });
-  if (r.ok) { box.value = ""; localStorage.removeItem("draft:" + selSide + ":" + sel); }
+  if (r.ok) {
+    box.value = "";
+    localStorage.removeItem("draft:" + selSide + ":" + sel);
+    growBox();          // a grown box must collapse again, or it stays tall
+  }
 }
 document.getElementById("sendb").onclick = send;
 // Slack-style drafts: unsent text is keyed per thread and survives navigation
@@ -1164,7 +1240,7 @@ document.getElementById("cmdb").onclick = async () => {
     rows.sort((a, b) => (favs.has(b.name) - favs.has(a.name)) || a.name.localeCompare(b.name));
     listEl.innerHTML = rows.map(c =>
       `<div class="cmdrow ${picked.has(c.name) ? "selq" : ""}" data-n="${c.name}">
-         <span class="cn">*${c.name}</span><span class="cd">${(c.description || "").replace(/</g, "&lt;")}</span>
+         <span class="cn">*${c.name}</span><span class="cd" title="${(c.description || "").replace(/"/g, "&quot;").replace(/</g, "&lt;")}">${(c.description || "").replace(/</g, "&lt;")}</span>
          <span class="fav ${favs.has(c.name) ? "on" : ""}" title="favorite">★</span>
        </div>`).join("");
     listEl.querySelectorAll(".cmdrow").forEach(r => {
@@ -1256,6 +1332,7 @@ async function startRec(target) {
               body: JSON.stringify({ title: recTarget.title, side: recTarget.side, msg: text }) });
           } else {
             box.value = (box.value ? box.value + " " : "") + text;
+            growBox();
           }
         } else if (r.ok && !r.text) {
           box.placeholder = "heard nothing — mic caught no speech, try again";
@@ -1281,9 +1358,77 @@ async function startRec(target) {
     document.getElementById("box").placeholder = "mic blocked: " + e.message;
   }
 }
+// Enter sends, shift+enter inserts a newline. The textarea would insert one on
+// a bare Enter too, so that path has to be prevented explicitly or every send
+// would leave a stray blank line behind.
 document.getElementById("box").addEventListener("keydown", e => {
-  if (e.key === "Enter") send();
+  if (e.key !== "Enter" || e.shiftKey) return;
+  if (e.isComposing) return;     // mid-IME candidate selection is not a send
+  e.preventDefault();
+  send();
 });
+
+// Grow to fit, up to the CSS max-height, then let it scroll. Height is reset
+// before measuring because scrollHeight never shrinks on its own.
+function growBox() {
+  const b = document.getElementById("box");
+  b.style.height = "auto";
+  // the cap comes from the stylesheet, not from a number repeated here —
+  // desktop and phone use different max-heights and they must not drift
+  const cap = parseFloat(getComputedStyle(b).maxHeight) || Infinity;
+  b.style.height = Math.min(b.scrollHeight, cap) + "px";
+}
+document.getElementById("box").addEventListener("input", growBox);
+addEventListener("resize", growBox);
+
+// ── drag and drop: store the file, put its path in the box ────────────────
+// Deliberately does NOT send. The paperclip pings immediately; a drop hands
+// the path back so Chris can write around it and send once. Doing both would
+// deliver the same attachment twice.
+(function dropzone() {
+  const compose = document.getElementById("compose");
+  const box = document.getElementById("box");
+  let depth = 0;                 // dragenter/leave fire per child element
+
+  async function store(file) {
+    const q = new URLSearchParams({ title: sel, side: selSide,
+                                    name: file.name || "", send: "0" });
+    const r = await fetch("/api/attach?" + q, { method: "POST",
+      headers: { "Content-Type": file.type || "application/octet-stream" },
+      body: file });
+    return r.json();
+  }
+
+  addEventListener("dragover", e => {
+    if (!e.dataTransfer || !Array.from(e.dataTransfer.types).includes("Files")) return;
+    e.preventDefault();
+    compose.classList.add("dragging");
+  });
+  addEventListener("dragenter", () => { depth++; });
+  addEventListener("dragleave", () => { if (--depth <= 0) compose.classList.remove("dragging"); });
+  addEventListener("drop", async e => {
+    if (!e.dataTransfer || !e.dataTransfer.files.length) return;
+    e.preventDefault();
+    depth = 0;
+    compose.classList.remove("dragging");
+    if (!sel) { box.placeholder = "pick a thread first, then drop"; return; }
+    for (const file of e.dataTransfer.files) {
+      if (file.size > 25e6) {    // the daemon refuses above this; say so here
+        box.placeholder = `${file.name} is too large (25 MB limit)`;
+        continue;
+      }
+      try {
+        const out = await store(file);
+        if (!out.ok) { box.placeholder = "attach failed: " + (out.detail || ""); continue; }
+        box.value = (box.value ? box.value.replace(/\s*$/, "\n") : "") + out.path;
+        growBox();
+        box.focus();
+      } catch (err) {
+        box.placeholder = "attach failed: " + err.message;
+      }
+    }
+  });
+})();
 
 const es = new EventSource("/api/events");
 es.onmessage = ev => {
@@ -1336,10 +1481,11 @@ async function refreshEscBadge() {
 const ACTIONS = [["start", "mic open"], ["finish", "mic close"], ["send", "delivered"],
                  ["receive", "reply spoken"], ["cancel", "cancel / fail"]];
 document.getElementById("gear").onclick = async () => {
-  const [s, wavs, voices] = await Promise.all([
+  const [s, wavs, voices, reps] = await Promise.all([
     (await fetch("/api/settings")).json(),
     (await fetch("/api/soundlist")).json(),
     (await fetch("/api/voices")).json(),
+    (await fetch("/api/replacements")).json(),
   ]);
   const snd = s.sounds || {};
   const opts = w => ['<option value="default">default tone</option>']
@@ -1380,9 +1526,49 @@ document.getElementById("gear").onclick = async () => {
     <div class="srow"><label>effort</label><select id="s-effort">
       ${["low", "medium", "high", "xhigh", "max"].map(e => `<option ${(s.spawn_effort || "xhigh") === e ? "selected" : ""}>${e}</option>`).join("")}
     </select></div>
+    <h3>spoken word fixes — applied to every transcript</h3>
+    <div class="hint">what the model hears on the left, what to send on the right.
+      Whole words, case-insensitive. The same list drives the in-app mic and
+      push-to-talk dictation.</div>
+    <div id="reps"></div>
+    <button id="rep-add" class="repadd">+ add a fix</button>
     <div class="actions"><button class="cancel">Cancel</button><button class="save">Save</button></div>
   </div>`;
   document.body.appendChild(ov);
+
+  // rebuilt from the array on every change so row indices never drift out of
+  // step with the data behind them
+  let pairs = (reps.pairs || []).map(p => ({ ...p }));
+  function drawReps() {
+    const host = ov.querySelector("#reps");
+    host.innerHTML = pairs.length ? "" :
+      '<div class="hint">none yet — the mic sends what it hears, unchanged.</div>';
+    pairs.forEach((p, i) => {
+      const row = document.createElement("div");
+      row.className = "reprow";
+      row.innerHTML = `<input type="checkbox" ${p.enabled !== false ? "checked" : ""}
+                         title="uncheck to keep the fix but stop applying it">
+        <input class="rfrom" placeholder="heard" value="">
+        <span class="arrow">→</span>
+        <input class="rto" placeholder="sent" value="">
+        <button class="rdel" title="delete">✕</button>`;
+      row.querySelector(".rfrom").value = p.from || "";
+      row.querySelector(".rto").value = p.to || "";
+      row.querySelector("input[type=checkbox]").onchange = e => { p.enabled = e.target.checked; };
+      row.querySelector(".rfrom").oninput = e => { p.from = e.target.value; };
+      row.querySelector(".rto").oninput = e => { p.to = e.target.value; };
+      row.querySelector(".rdel").onclick = () => { pairs.splice(i, 1); drawReps(); };
+      host.appendChild(row);
+    });
+  }
+  drawReps();
+  ov.querySelector("#rep-add").onclick = () => {
+    pairs.push({ from: "", to: "", enabled: true });
+    drawReps();
+    const last = ov.querySelectorAll(".reprow .rfrom");
+    if (last.length) last[last.length - 1].focus();
+  };
+
   ov.onclick = e => { if (e.target === ov) ov.remove(); };
   ov.querySelector(".cancel").onclick = () => ov.remove();
   ov.querySelector(".save").onclick = async () => {
@@ -1400,6 +1586,11 @@ document.getElementById("gear").onclick = async () => {
     await fetch("/api/settings", { method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify(hubCfg) });
+    // a rule with a blank left side matches nothing; drop the empty rows an
+    // add-then-cancel leaves behind rather than storing rules that do nothing
+    await fetch("/api/replacements", { method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ pairs: pairs.filter(p => (p.from || "").trim()) }) });
     ov.remove();
     renderList();
   };

@@ -9,6 +9,8 @@ Parakeet installer, 2026-08-15).
 """
 from __future__ import annotations
 
+from ping_hub import proc
+
 import argparse
 import shutil
 import sys
@@ -150,7 +152,7 @@ def cmd_update(args) -> int:
     if args.dry_run:
         return 0
     import subprocess
-    r = subprocess.run(cmd, capture_output=True, text=True)
+    r = proc.run(cmd, capture_output=True, text=True)
     print((r.stdout or "").strip()[-1500:] or "(no output)")
     if r.returncode != 0:
         print((r.stderr or "").strip()[-800:], file=sys.stderr)
