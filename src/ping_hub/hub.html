@@ -233,6 +233,14 @@
   #compose { display: flex; gap: 8px; padding: 12px 18px; background: var(--panel);
              border-top: 1px solid var(--line); align-items: flex-end;
              position: relative; }
+  /* align-items:flex-end keeps the buttons on the baseline of a GROWN
+     textarea. It also stops them stretching, which is where their height used
+     to come from — so every button now states its own, matching the box's
+     one-line height. Without this they collapse to text height and float.
+     HEIGHT ONLY on purpose: `#compose > button` outranks `#sendb` (an ID plus
+     an element beats an ID alone), so setting flex here would silently
+     override the phone layout's thirds inside its own media query. */
+  #compose > button { height: 41px; }
   /* a textarea, not an input, so shift+enter can insert a real newline. It
      grows with the text up to a cap and then scrolls — a long paste must not
      push the send button off the screen. resize:none because the drag handle
@@ -332,6 +340,9 @@
        Focusing the input grows it and hides the mic until blur. */
     #compose { padding: 10px 8px calc(10px + env(safe-area-inset-bottom));
                position: sticky; bottom: 0; gap: 6px; }
+    /* the thirds layout needs them to GROW, so the desktop fixed height and
+       flex:0 0 auto are both overridden here rather than inherited */
+    #compose > button { height: 56px; }
     #attachb { order: 0; flex: 0 0 52px; min-height: 56px; padding: 0; font-size: 22px; }
     #sendb { order: 1; flex: 1 1 0; min-width: 0; font-size: 17px; min-height: 56px; padding: 0; }
     /* padding is vertical here, unlike the old single-line input: a textarea
