@@ -176,6 +176,51 @@ class Engine:
                     out[m["codename"]] = sq.name
         return out
 
+    @staticmethod
+    def has_evidence(t: dict) -> bool:
+        """Is there a real Claude Code session behind this card?
+
+        A live session leaves traces the roster already collects: a model name
+        and a context size read from its transcript tail, a label, a live verb.
+        A relay mirror has a registration and nothing else, because there is no
+        transcript on that side to read.
+        """
+        return bool(t.get("model") or t.get("ctx") or t.get("doing")
+                    or t.get("label"))
+
+    def mark_ghosts(self) -> None:
+        """Flag cross-side relay mirrors.
+
+        One session id registered on BOTH sides means one of the two cards is
+        plumbing: the session registered a title over there so pings can route,
+        but it does not run there. The ghost is the side with no evidence
+        behind it, and it should read as infrastructure rather than as a
+        session that has gone quiet — nothing about it deserves to worry
+        anyone.
+
+        Ambiguity is resolved by NOT flagging. If both sides have evidence they
+        are two real sessions sharing an id, and if neither does there is
+        nothing to distinguish them; guessing would gray out a real card.
+        """
+        by_sid: dict[str, list[str]] = {}
+        for key, t in self.threads.items():
+            t["ghost"] = False      # EVERY card carries it: a missing field
+            sid = t.get("session_id") or ""   # reads as undefined in the UI
+            if sid:
+                by_sid.setdefault(sid, []).append(key)
+        for sid, keys in by_sid.items():
+            if len(keys) < 2:
+                continue
+            sides = {self.threads[k].get("side") for k in keys}
+            if len(sides) < 2:
+                continue            # duplicates on ONE side are not mirrors
+            real = [k for k in keys if self.has_evidence(self.threads[k])]
+            if len(real) != 1:
+                continue            # ambiguous: leave every card alone
+            for key in keys:
+                if key not in real:
+                    self.threads[key]["ghost"] = True
+
     def _relations(self) -> dict:
         """{child "side:title" -> parent "side:title"} from hub/relations.json
         — Chris's parent/child (orchestrator/builder) designations."""
@@ -552,6 +597,7 @@ class Engine:
                 if key.startswith(f"{self.side}:") and t.get("seen_at") != now:
                     t["watching"] = False
                     t["gone"] = True
+            self.mark_ghosts()
         self._emit({"event": "roster", "side": self.side})
 
     # ── inbox watch ──────────────────────────────────────────────────────
@@ -822,6 +868,7 @@ class Engine:
                 key = f"wsl:{title}"
                 t["parent"] = (rel.get(key) or "").split(":")[-1]
                 t["children"] = sum(1 for v in rel.values() if v == key)
+            self.mark_ghosts()
         self._emit({"event": "roster", "side": "wsl"})
 
     def _bridge_ping(self, inbox: str, ping: dict) -> None:

@@ -425,6 +425,22 @@ class TtsSection(_Section):
         return str(self._get("default_voice", "af_heart"))
 
 
+class UpdateSection(_Section):
+    @property
+    def source(self) -> str:
+        """What `ping-hub update` reinstalls FROM: a checkout path, a wheel, a
+        git URL, or a package name. Empty means the install did not record one,
+        and update refuses rather than guessing — reinstalling from the wrong
+        source is how a machine silently ends up on someone else's build."""
+        return str(self._get("source", ""))
+
+    @property
+    def check_url(self) -> str:
+        """Optional version endpoint. NOTIFY-ONLY by decision (2026-08-15):
+        no self-updating binary channel."""
+        return str(self._get("check_url", ""))
+
+
 class CxPttSection(_Section):
     @property
     def enabled(self) -> bool:
@@ -471,6 +487,7 @@ class Config:
         self.stt = SttSection(raw.get("stt", {}), self)
         self.tts = TtsSection(raw.get("tts", {}), self)
         self.cx_ptt = CxPttSection(raw.get("cx_ptt", {}), self)
+        self.update = UpdateSection(raw.get("update", {}), self)
 
 
 def config_path(env: dict | None = None) -> Path | None:

@@ -62,6 +62,13 @@ def cmd_install(args) -> int:
             return 1
 
     sections: dict[str, dict] = {"paths": {"hub_home": str(home)}}
+    src = args.source or install.installed_source()
+    if src:
+        sections["update"] = {"source": src}
+    else:
+        print("\nnote: could not tell what this package was installed from, so "
+              "`ping-hub update` will need --source or [update] source in "
+              "hub.toml.")
     if args.no_voice:
         print("\n--no-voice: skipping engine provisioning")
     else:
@@ -106,6 +113,50 @@ def register_autostart(cfg, skip: bool = False, **kw) -> list[str]:
         # a failed task registration must not lose a good install
         return [f"could not register login tasks: {e}",
                 "the hub is installed; start it with `ping-hub serve`"]
+
+
+def daemon_is_running(cfg, connect=None) -> bool:
+    """Something is already serving the hub port. Updating under a live daemon
+    swaps files beneath a running process; the honest move is to refuse."""
+    import socket
+    connect = connect or (lambda h, p: socket.create_connection((h, p), 1.0))
+    host = "127.0.0.1" if cfg.hub.bind in ("0.0.0.0", "") else cfg.hub.bind
+    try:
+        connect(host, cfg.hub.port).close()
+        return True
+    except (OSError, AttributeError):
+        return False
+
+
+def update_command(cfg, source: str = "") -> list[str]:
+    """The argv `update` would run. Split out so it can be asserted without
+    installing anything."""
+    src = source or cfg.update.source
+    if not src:
+        raise install.InstallError(
+            "no update source recorded. Re-run `ping-hub install` from the "
+            "package you want to track, or set [update] source in hub.toml.")
+    return [sys.executable, "-m", "pip", "install", "--upgrade", src]
+
+
+def cmd_update(args) -> int:
+    cfg = config.get()
+    if daemon_is_running(cfg) and not args.force:
+        print(f"the hub is serving on port {cfg.hub.port}. Stop it first, or "
+              f"pass --force to update underneath it.")
+        return 1
+    cmd = update_command(cfg, args.source or "")
+    print("  " + " ".join(cmd))
+    if args.dry_run:
+        return 0
+    import subprocess
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    print((r.stdout or "").strip()[-1500:] or "(no output)")
+    if r.returncode != 0:
+        print((r.stderr or "").strip()[-800:], file=sys.stderr)
+        return r.returncode
+    print("\nre-checking:")
+    return cmd_doctor(args)
 
 
 def cmd_doctor(args) -> int:
@@ -154,6 +205,8 @@ def main(argv: list[str] | None = None) -> int:
     i.add_argument("--config", help="hub.toml to write")
     i.add_argument("--no-voice", action="store_true", help="config only")
     i.add_argument("--force", action="store_true", help="ignore preflight failures")
+    i.add_argument("--source", help="record what `ping-hub update` reinstalls "
+                                    "from (default: detected from pip)")
     i.add_argument("--no-autostart", action="store_true",
                    help="do not register the hub to start at login")
     i.add_argument("--deploy-bridge", action="store_true",
@@ -166,6 +219,13 @@ def main(argv: list[str] | None = None) -> int:
 
     c = sub.add_parser("config", help="print every resolved value")
     c.set_defaults(fn=cmd_config)
+
+    u = sub.add_parser("update", help="reinstall this package from its source")
+    u.add_argument("--source", help="override the recorded source")
+    u.add_argument("--dry-run", action="store_true", help="print the command only")
+    u.add_argument("--force", action="store_true",
+                   help="update even while the hub is serving")
+    u.set_defaults(fn=cmd_update)
 
     a = p.parse_args(argv)
     if not getattr(a, "fn", None):

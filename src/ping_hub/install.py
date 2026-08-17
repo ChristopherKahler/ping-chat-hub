@@ -213,6 +213,50 @@ def render_hub_toml(sections: dict) -> str:
     return "\n".join(out)
 
 
+def installed_source(read_direct_url=None, list_dists=None) -> str:
+    """Where this package was installed FROM, so `ping-hub update` can reinstall
+    from the same place instead of guessing.
+
+    pip records it in PEP 610 `direct_url.json` for path, VCS and URL installs.
+    The distribution is found by which one provides `ping_hub`, not by name —
+    the distribution is currently called something else, and hardcoding that
+    would break the day it is renamed.
+    """
+    import importlib.metadata as md
+    if read_direct_url is None:
+        def read_direct_url(dist_name: str) -> str:
+            try:
+                return md.distribution(dist_name).read_text("direct_url.json") or ""
+            except Exception:
+                return ""
+    # injectable: enumerating every installed distribution is slow enough to
+    # dominate a test run, and a unit test has no business reading the real
+    # environment to answer a question about parsing
+    if list_dists is None:
+        def list_dists() -> list[str]:
+            try:
+                return md.packages_distributions().get("ping_hub") or []
+            except Exception:
+                return []
+    names = list_dists()
+    for name in names:
+        raw = read_direct_url(name)
+        if not raw:
+            continue
+        try:
+            url = (json.loads(raw) or {}).get("url", "")
+        except ValueError:
+            continue
+        if not url:
+            continue
+        if url.startswith("file:"):
+            from urllib.parse import urlparse
+            from urllib.request import url2pathname
+            return url2pathname(urlparse(url).path)
+        return url
+    return ""
+
+
 def deploy_bridge(cfg, deploy_unc: str | None = None,
                   config_unc: str | None = None, log=_log) -> dict:
     """Copy the bridge into WSL and drop its config beside it.

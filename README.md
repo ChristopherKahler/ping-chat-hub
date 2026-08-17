@@ -149,8 +149,15 @@ Runtime preferences you toggle in the UI — spawn model, effort, voice — live
 
 `bind = "0.0.0.0"` is the default because a tailnet proxy cannot reach a
 loopback bind. **Anyone who reaches this daemon can open terminals on your
-machine.** Keep it on localhost or a tailnet; a public interface is
-unsupported. See `docs/TAILSCALE-SETUP.md`.
+machine.** Keep it on localhost or a tailnet; a public interface is unsupported.
+
+## The phone
+
+[docs/PHONE-SETUP.md](docs/PHONE-SETUP.md) is the end-to-end path. The short
+version: reach the hub through `tailscale serve`, not a bare tailnet IP. Over
+plain HTTP to an IP the page loads but the microphone silently does nothing and
+the app will not install, because browsers gate both behind a secure context.
+`serve` gives you a real certificate and all of it works.
 
 ---
 

@@ -97,6 +97,6 @@ def base(cfg) -> dict:
     return _r(READY, p) if p else _r(ABSENT, f"{cfg.paths.base_bin} not on PATH")
 
 
-def probe_all(cfg) -> dict:
-    return {"stt": stt(cfg), "tts": tts(cfg), "cx_ptt": cx_ptt(cfg),
+def probe_all(cfg, reach=_reachable) -> dict:
+    return {"stt": stt(cfg, reach=reach), "tts": tts(cfg), "cx_ptt": cx_ptt(cfg),
             "wsl": wsl(cfg), "base": base(cfg)}

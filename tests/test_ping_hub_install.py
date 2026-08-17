@@ -50,23 +50,27 @@ def test_stt_ready_only_when_something_answers():
     assert dead["state"] == caps.ERROR and "refused" in dead["detail"]
 
 
-def test_a_4xx_still_proves_a_server_is_listening():
+def test_a_4xx_still_proves_a_server_is_listening(monkeypatch):
     """The bridge answers GET / with a health blob, but a future version
-    returning 404 there must not read as 'server down'."""
+    returning 404 there must not read as 'server down'. No real socket is
+    opened here — an earlier version of this test resolved a hostname for real
+    and cost the suite two seconds."""
     import urllib.error
 
-    def fake(url, timeout=2.0):
+    import ping_hub.capabilities as m
+
+    def http_error(url, timeout=2.0):
         raise urllib.error.HTTPError(url, 404, "nf", None, None)
 
-    assert caps._reachable("http://x/", 0.1)[0] is False   # transport failure path
-    # and the real helper treats an HTTPError as reachable:
-    import ping_hub.capabilities as m
-    orig = m.urllib.request.urlopen
-    m.urllib.request.urlopen = fake
-    try:
-        assert m._reachable("http://x/")[0] is True
-    finally:
-        m.urllib.request.urlopen = orig
+    monkeypatch.setattr(m.urllib.request, "urlopen", http_error)
+    assert m._reachable("http://x/")[0] is True
+
+    def transport_error(url, timeout=2.0):
+        raise urllib.error.URLError("name or service not known")
+
+    monkeypatch.setattr(m.urllib.request, "urlopen", transport_error)
+    ok, why = m._reachable("http://x/")
+    assert ok is False and "service not known" in why
 
 
 def test_cx_ptt_absent_is_not_reported_as_a_human_switching_it_off():
@@ -90,7 +94,7 @@ def test_wsl_absent_on_a_one_sided_machine():
 
 
 def test_probe_all_covers_every_surface():
-    got = caps.probe_all(_cfg())
+    got = caps.probe_all(_cfg(), reach=lambda u, timeout=2.0: (True, ""))
     assert set(got) == {"stt", "tts", "cx_ptt", "wsl", "base"}
     assert all(r["state"] in (caps.READY, caps.ABSENT, caps.ERROR, caps.OFF)
                for r in got.values())

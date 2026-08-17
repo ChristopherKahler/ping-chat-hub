@@ -333,6 +333,9 @@ class Handler(BaseHTTPRequestHandler):
                 (q.get("title") or [""])[0], (q.get("side") or ["win"])[0]))
         elif u.path == "/api/settings":
             self._json(hub_settings())
+        elif u.path == "/api/replacements":
+            from ping_hub import replacements
+            self._json(replacements.migrate_if_needed(CFG))
         elif u.path == "/api/capabilities":
             # the package is opinionated: voice affordances always render, so
             # the page needs to be able to say WHY there is no audio instead
@@ -470,7 +473,11 @@ class Handler(BaseHTTPRequestHandler):
                                  headers={"Content-Type": "audio/wav"})
                 with ur.urlopen(req, timeout=120) as resp:
                     out = json.loads(resp.read())
-            self._json({"ok": True, "text": out.get("text", "")})
+            # the same substitution list cx-ptt applies, from the same store:
+            # one spoken correction, however the words arrived
+            from ping_hub import replacements
+            text = replacements.apply_for(CFG, out.get("text", ""))
+            self._json({"ok": True, "text": text})
         except Exception as e:  # phone flow must never 500 opaquely
             self._json({"ok": False, "detail": str(e)}, 500)
 
@@ -691,6 +698,16 @@ class Handler(BaseHTTPRequestHandler):
                         f"you are its orchestrator; prep G0.", side=side, sender="hub")
                 self._json({"ok": True, "title": spawn_title,
                             "detail": f"spawning {side} tab in {cwd or 'home'}"})
+            except OSError as e:
+                self._json({"ok": False, "detail": str(e)}, 500)
+        elif u.path == "/api/replacements":
+            from ping_hub import replacements
+            try:
+                doc = replacements.load(CFG)
+                doc["pairs"] = replacements.normalise(payload.get("pairs"))
+                doc["imported_from_cx_toml"] = True   # editing here supersedes
+                replacements.save(CFG, doc)
+                self._json({"ok": True, "count": len(doc["pairs"])})
             except OSError as e:
                 self._json({"ok": False, "detail": str(e)}, 500)
         elif u.path == "/api/settings":
