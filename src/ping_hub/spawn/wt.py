@@ -114,7 +114,15 @@ def spawn(cfg, side: str, claude_args: list[str], cwd: str | None = None,
     (base's auto-register honors it) — used to resurrect a dead thread's
     codename onto a fresh session."""
     cmd = build_command(cfg, side, claude_args, cwd, title, prompt)
-    env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_CHILD_SESSION"}
+    # WT_SESSION must NOT be inherited. base binds a session's title partly by
+    # that GUID (tab-continuity reclaim), and the daemon carries the GUID of
+    # whichever terminal it was started in — so a spawned tab presenting it
+    # RECLAIMS the title already bound to it rather than taking the pinned
+    # BASE_RELAY_AS one. Observed live: a rebooted `heron` came back as `chris`
+    # with the hub's own wt_session and the ORIGINAL registered_at, because it
+    # was reclaimed, not created. Windows Terminal gives the new tab its own.
+    drop = {"CLAUDE_CODE_CHILD_SESSION", "WT_SESSION"}
+    env = {k: v for k, v in os.environ.items() if k not in drop}
     env["CLAUDE_CODE_FORCE_SESSION_PERSISTENCE"] = "1"
     launch(cmd, env, restore_focus=cfg.terminal.restore_focus)
 

@@ -96,6 +96,24 @@ def test_wsl_spawn_writes_a_script_and_runs_that_same_file(tmp_path, monkeypatch
     assert written[0].read_bytes().count(b"\r\n") == 0       # LF only, for bash
 
 
+def test_the_child_never_inherits_the_daemons_tab_identity(monkeypatch, tmp_path):
+    """WT_SESSION identifies a Windows Terminal tab, and base binds titles
+    partly by it. Inherited, a spawned session presents the HUB's tab identity
+    and reclaims the title bound to it — observed live as a rebooted `heron`
+    coming back as `chris`, carrying the hub's wt_session and the original
+    registered_at because it was reclaimed rather than created."""
+    seen = {}
+    monkeypatch.setenv("WT_SESSION", "dfb241bb-692a-4102-8dec-edfe44317941")
+    monkeypatch.setenv("CLAUDE_CODE_CHILD_SESSION", "should-not-travel")
+    monkeypatch.setattr(wt, "launch", lambda cmd, env, **k: seen.update(env=env))
+    cfg = _cfg()
+    wt.spawn(cfg, "win", ["--help"], None, "heron", None)
+    assert "WT_SESSION" not in seen["env"]
+    assert "CLAUDE_CODE_CHILD_SESSION" not in seen["env"]
+    assert seen["env"]["CLAUDE_CODE_FORCE_SESSION_PERSISTENCE"] == "1"
+    assert "PATH" in seen["env"]      # the rest of the environment still travels
+
+
 def test_wsl_spawn_on_a_machine_with_no_wsl_refuses_loudly():
     cfg = _cfg(distro="", wsl_home="")
     with pytest.raises(OSError, match="no WSL side"):
