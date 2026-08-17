@@ -125,8 +125,15 @@ def reap(inbox_root: Path, title: str, query=None, kill=None) -> tuple[bool, str
         return kill(pid)
     r = proc.run(["taskkill", "/PID", str(pid), "/T", "/F"],
                  capture_output=True, text=True, timeout=30)
-    if r.returncode != 0:
-        return False, (r.stdout + r.stderr).strip()[:200]
+    # taskkill's exit code does NOT mean what it looks like for a tree kill:
+    # /T walks the descendants, and any child that exits on its own mid-walk
+    # makes the whole call exit nonzero even though every process it was asked
+    # to end is dead. Observed live on `wtprobe` — a 409 failure whose detail
+    # was a wall of SUCCESS lines. So the outcome is judged by the only thing
+    # that actually matters: is the ANCHOR pid gone.
+    if process_facts(pid, query=query) is not None:
+        out = (r.stdout + r.stderr).strip()[:200]
+        return False, f"pid {pid} is still running" + (f": {out}" if out else "")
     try:
         record_path(inbox_root, title).unlink()
     except OSError:

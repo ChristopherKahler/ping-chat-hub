@@ -47,6 +47,41 @@ def test_a_confirmed_process_is_ended_as_a_tree(inbox):
     assert ok and killed == [4242]
 
 
+def test_the_outcome_is_the_anchors_state_not_the_exit_code(inbox, monkeypatch):
+    """`taskkill /T` exits NONZERO when any descendant races away mid-walk,
+    even though everything it was asked to end is dead. Observed live on
+    `wtprobe`: a 409 failure whose detail was a wall of SUCCESS lines."""
+    record(inbox)
+    monkeypatch.setattr(reap.proc, "run",
+                        lambda *a, **k: type("R", (), {"returncode": 1,
+                                                       "stdout": "SUCCESS: ...",
+                                                       "stderr": ""})())
+    seen = []
+
+    def query(pid):
+        seen.append(pid)
+        # confirm() sees it alive, the post-kill check sees it gone
+        return {"image": "powershell.exe", "created": CREATED} if len(seen) == 1 else None
+
+    ok, msg = reap.reap(inbox, TITLE, query=query)
+    assert ok, msg
+    assert "ended pid 4242" in msg
+    assert reap.read_record(inbox, TITLE) is None      # record cleared
+
+
+def test_a_survivor_is_reported_as_a_failure_even_on_exit_zero(inbox, monkeypatch):
+    """The mirror case: taskkill claims success, the anchor is still there."""
+    record(inbox)
+    monkeypatch.setattr(reap.proc, "run",
+                        lambda *a, **k: type("R", (), {"returncode": 0,
+                                                       "stdout": "", "stderr": ""})())
+    ok, why = reap.reap(inbox, TITLE,
+                        query=lambda pid: {"image": "powershell.exe",
+                                           "created": CREATED})
+    assert not ok and "still running" in why
+    assert reap.read_record(inbox, TITLE) is not None  # record kept for a retry
+
+
 def test_the_record_is_cleared_only_by_a_real_kill(inbox):
     """A failed kill must leave the record, or a retry has nothing to confirm."""
     record(inbox)
