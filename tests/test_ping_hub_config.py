@@ -34,7 +34,7 @@ from ping_hub.config import Config, Probe
 OPERATOR_HOME = r"C:\Users\operator"
 OPERATOR_LINUX_HOME = "/home/operator"
 OPERATOR_DISTRO = "Ubuntu"
-OPERATOR_WT_GUID = "{11111111-2222-3333-4444-555555555555}"
+OPERATOR_WT_GUID = "{11111111-2222-3333-4444-555555555555}"  # pubscan: allow
 
 CX_TOML_PATH = f"{OPERATOR_HOME}\\.base-gbl\\cx.toml"
 SAY_CMD = f"{OPERATOR_HOME}\\tools\\kokoro\\say.cmd"
@@ -317,13 +317,13 @@ def test_shadow_instance_config_cannot_touch_the_live_registration(tmp_path):
 # including the next contributor's on their first commit, and names nobody.
 
 _OPERATOR_PATHS = [
-    # C:\Users\<someone>  /  C:/Users/<someone>
-    (re.compile(r"[A-Za-z]:[\\/]{1,2}Users[\\/]{1,2}(?!<)\w"), "windows home"),
-    # /mnt/<drive>/Users/<someone> — the WSL view of the same thing
-    (re.compile(r"/mnt/[a-z]/Users/(?!<)\w", re.I), "windows home via WSL"),
-    # /home/<someone> and /Users/<someone>, unless it is a placeholder
-    (re.compile(r"/home/(?!<|\{|\$)\w"), "linux home"),
-    (re.compile(r"(?<!mnt/c)(?<!\w)/Users/(?!<|\{|\$)\w"), "mac home"),
+    # C:\Users\<name>  /  C:/Users/<name>
+    (re.compile(r"[A-Za-z]:[\\/]{1,2}Users[\\/]{1,2}(?!<)\w"), "windows home"),  # pubscan: allow
+    # /mnt/<drive>/Users/<name> — the WSL view of the same thing
+    (re.compile(r"/mnt/[a-z]/Users/(?!<)\w", re.I), "windows home via WSL"),  # pubscan: allow
+    # /home/<name> and /Users/<name>, unless it is a placeholder
+    (re.compile(r"/home/(?!<|\{|\$)\w"), "linux home"),  # pubscan: allow
+    (re.compile(r"(?<!mnt/c)(?<!\w)/Users/(?!<|\{|\$)\w"), "mac home"),  # pubscan: allow
     # a concrete Windows Terminal / COM profile id belongs in hub.toml
     (re.compile(r"\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}",
                 re.I), "device/profile GUID"),
@@ -369,7 +369,7 @@ def test_no_hardcoded_operator_paths_in_src():
     'WSL_HOME = "/home/someone"',
     'MAC_HOME = "/Users/someone/Library"',
     'DOC = "/mnt/c/Users/someone/notes.md"',
-    'PROFILE = "{0a1b2c3d-4e5f-6789-abcd-ef0123456789}"',
+    'PROFILE = "{0a1b2c3d-4e5f-6789-abcd-ef0123456789}"',  # pubscan: allow
 ])
 def test_the_tripwire_actually_catches_a_planted_violation(violation):
     """A guard that has never failed is a guard nobody has tested."""
