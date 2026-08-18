@@ -77,7 +77,7 @@ def test_a_survivor_is_reported_as_a_failure_even_on_exit_zero(inbox, monkeypatc
                                                        "stdout": "", "stderr": ""})())
     ok, why = reap.reap(inbox, TITLE,
                         query=lambda pid: {"image": "powershell.exe",
-                                           "created": CREATED})
+                                           "created": CREATED}, sleep=lambda s: None)
     assert not ok and "still running" in why
     assert reap.read_record(inbox, TITLE) is not None  # record kept for a retry
 
@@ -306,3 +306,80 @@ def test_no_wsl_invocation_in_reap_bypasses_the_helper():
     src = Path(reap.__file__).read_text(encoding="utf-8")
     code = chr(10).join(l.split("#")[0] for l in src.splitlines())
     assert code.count('"wsl.exe"') == 1
+
+
+# ── TERM is not instantaneous ────────────────────────────────────────────────
+# These deliberately do NOT inject `kill`: that seam returns its own result and
+# short-circuits the post-kill verification, so a test using it never exercises
+# the gone-check at all. Caught here -- three tests written against it passed
+# while proving nothing. The kill is stubbed one layer lower instead.
+
+class _Killed:
+    stdout = ""
+    stderr = ""
+
+
+@pytest.fixture
+def no_real_kill(monkeypatch):
+    monkeypatch.setattr(reap.proc, "run", lambda *a, **k: _Killed())
+
+
+def test_a_process_that_dies_a_moment_later_is_a_success(tmp_path, no_real_kill):
+    """Measured on a clean probe: alive at t+0, gone at t+1s, stayed gone. The
+    close reported failure while the session was already dying."""
+    reap.write_record(tmp_path, "t", 999, "claude", "48344893", side="wsl")
+    calls = []
+
+    def query(pid):
+        calls.append(pid)
+        return {"image": "claude", "created": "48344893"} if len(calls) < 4 else None
+
+    ok, why = reap.reap(tmp_path, "t", query=query, sleep=lambda s: None)
+    assert ok is True, why
+    assert len(calls) > 2, "the gone-check never retried"
+
+
+def test_the_check_returns_the_moment_it_is_gone(tmp_path, no_real_kill):
+    """The common case must not pay the whole budget: one check, then done."""
+    slept = []
+    reap.write_record(tmp_path, "t", 999, "claude", "x")
+    calls = []
+
+    def query(pid):
+        calls.append(pid)
+        return {"image": "claude", "created": "x"} if len(calls) == 1 else None
+
+    ok, _ = reap.reap(tmp_path, "t", query=query, sleep=lambda s: slept.append(s))
+    assert ok is True and slept == []
+
+
+def test_a_genuinely_surviving_process_still_fails(tmp_path, no_real_kill):
+    """The retry must not turn a real refusal into a false success -- that
+    would start a second daemon on a live one."""
+    reap.write_record(tmp_path, "t", 999, "claude", "x")
+    ok, why = reap.reap(tmp_path, "t",
+                        query=lambda pid: {"image": "claude", "created": "x"},
+                        sleep=lambda s: None)
+    assert ok is False and "still running" in why
+
+
+def test_the_retry_is_bounded(tmp_path, no_real_kill):
+    slept = []
+    reap.write_record(tmp_path, "t", 999, "claude", "x")
+    reap.reap(tmp_path, "t", query=lambda pid: {"image": "claude", "created": "x"},
+              sleep=lambda s: slept.append(s))
+    assert sum(slept) <= reap.GONE_BUDGET + reap.GONE_STEP
+
+
+def test_both_sides_get_the_retry(tmp_path, no_real_kill):
+    """A Windows tree kill has the same window; taskkill's exit code was
+    already untrustworthy there for exactly this reason."""
+    reap.write_record(tmp_path, "t", 999, "claude", "x", side="win")
+    calls = []
+
+    def query(pid):
+        calls.append(pid)
+        return {"image": "claude", "created": "x"} if len(calls) < 3 else None
+
+    ok, why = reap.reap(tmp_path, "t", query=query, sleep=lambda s: None)
+    assert ok is True, why

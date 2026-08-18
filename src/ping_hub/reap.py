@@ -192,7 +192,35 @@ def _norm(ts) -> str:
     return s[:19]          # to the second; sub-second digits differ by source
 
 
-def reap(inbox_root: Path, title: str, query=None, kill=None) -> tuple[bool, str]:
+# TERM is not instantaneous. Measured on a clean probe 2026-08-18: the pid was
+# ALIVE at t+0 and GONE at t+1s and stayed gone -- so the kill lands, and only
+# the check ran too early. Reporting that as "still running" told the operator
+# the close had failed while the session was already dying.
+GONE_BUDGET = 3.0
+GONE_STEP = 0.25
+
+
+def _gone(pid: int, side: str, query=None, sleep=None) -> bool:
+    """Is the anchor gone? Poll briefly rather than asking once.
+
+    Returns the MOMENT it is gone, so the common case costs one check and only
+    a genuinely surviving process pays the full budget. Both sides: a Windows
+    tree kill has the same window, which is why taskkill's exit code was
+    already untrustworthy there.
+    """
+    sleep = sleep or time.sleep
+    waited = 0.0
+    while True:
+        if process_facts(pid, query=query, side=side) is None:
+            return True
+        if waited >= GONE_BUDGET:
+            return False
+        sleep(GONE_STEP)
+        waited += GONE_STEP
+
+
+def reap(inbox_root: Path, title: str, query=None, kill=None,
+         sleep=None) -> tuple[bool, str]:
     """Confirm, then end the process tree. Refuses rather than guessing."""
     record = find_record(inbox_root, title)
     ok, why = confirm(record, query=query)
@@ -217,7 +245,7 @@ def reap(inbox_root: Path, title: str, query=None, kill=None) -> tuple[bool, str
     # to end is dead. Observed live on `wtprobe` — a 409 failure whose detail
     # was a wall of SUCCESS lines. So the outcome is judged by the only thing
     # that actually matters: is the ANCHOR pid gone.
-    if process_facts(pid, query=query, side=side) is not None:
+    if not _gone(pid, side, query=query, sleep=sleep):
         out = (r.stdout + r.stderr).strip()[:200]
         return False, f"pid {pid} is still running" + (f": {out}" if out else "")
     try:
