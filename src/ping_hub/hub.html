@@ -117,6 +117,12 @@
     text-align: center; color: var(--accent); cursor: pointer; user-select: none;
     margin-right: 2px; }
   .th.kid { padding-left: 26px; border-left: 2px solid var(--line); }
+  /* (c): the three interactive badges leave the tag flow into their own row.
+     Tried as CSS only first -- margin-left:auto inside the same flex-wrap
+     container does not right-align a cluster, it forces a line break before
+     it, so the card got TALLER (measured 166 -> 139 vs 126 for tags-only).
+     A sibling container is what actually removes the row. */
+  .rowctl { display: flex; align-items: center; gap: 6px; margin: 4px 0 2px; }
   .repbtns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
   .repbtns .repadd { margin-top: 0; }
   .cmdrow .have { color: var(--dim); font-size: 12px; flex: 0 0 auto; }
@@ -396,6 +402,13 @@
     #attachb{ order: 2; flex: 0 0 52px; min-height: 56px; padding: 0; font-size: 22px; }
     #sendb  { order: 3; flex: 1 1 0; min-width: 0; font-size: 17px; min-height: 56px; padding: 0; }
     #micb   { order: 4; flex: 1 1 0; min-width: 0; font-size: 28px; min-height: 56px; padding: 0; }
+  .th .badges .badge, .th .name .badge {
+    font-size: 11px; padding: 1px 6px; border-radius: 5px; }
+  .th .badges { gap: 4px; margin: 5px 0 3px; }
+  /* buttons keep a thumb-sized box while the tags go subtle */
+  .rowctl .badge { font-size: 15px; padding: 5px 9px; border-radius: 8px; }
+  .rowctl .badge.chan { font-size: 12px; }
+  .rowctl { margin: 2px 0 0; }
   }
 </style>
 </head>
@@ -690,6 +703,8 @@ function renderList() {
         ${ctxBadge(t)}
         ${t.esc ? '<span class="badge escb">esc!</span>' : ''}
         ${t.squad ? `<span class="badge squad">${t.squad}</span>` : ''}
+      </div>
+      <div class="rowctl">
         <span class="badge chan" title="channel: ctrl+alt+num">${t.channel !== "" ? "ch " + t.channel : "ch +"}</span>
         <span class="badge voice ${hubCfg.tts_thread === t.side + ":" + t.title ? "von" : ""}" title="arm as the spoken voice channel">${hubCfg.tts_thread === t.side + ":" + t.title ? "🔊 voice" : "🔇"}</span>
         <span class="badge rowmic" title="record straight into this session">🎤</span>
