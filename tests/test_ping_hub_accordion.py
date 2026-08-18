@@ -91,6 +91,8 @@ def test_collapsing_hides_children_without_hiding_them_from_squads():
     """Collapsed in Terminals is not the hidden tab, and Squads always shows
     every child."""
     c = code()
-    assert "if (t._child && accCollapsed(t._under)) continue;" in c
+    # scoped to Terminals: Squads always shows every child, and the markers
+    # outlive a render, so an unscoped skip hid children in the wrong tab
+    assert 'if (tab === "term" && t._child && accCollapsed(t._under)) continue;' in c
     grp = c[c.index("if (tab === \"term\") items = groupByParent(items);"):]
     assert grp.index("list.innerHTML") > 0
