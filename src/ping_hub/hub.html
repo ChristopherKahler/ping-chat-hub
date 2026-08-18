@@ -249,7 +249,12 @@
   #modal select { flex: 1; background: var(--panel2); color: var(--text);
                   border: 1px solid var(--line); border-radius: 6px; padding: 6px; }
   #modal input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--accent2); }
-  #modal .actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+  /* wrap, because the row can hold FOUR: cancel, close out first, close,
+     clear. Measured at 320px without it (tools/clear_modal_probe.mjs), the
+     flex-end row overflowed to the LEFT and put Cancel at x=-39 — off the
+     screen, not merely off the modal. Nothing wraps while three fit. */
+  #modal .actions { display: flex; flex-wrap: wrap; justify-content: flex-end;
+                    gap: 10px; margin-top: 18px; }
   #modal .actions button { border-radius: 8px; padding: 8px 18px; cursor: pointer;
         border: 1px solid var(--line); background: var(--panel2); color: var(--text); }
   #modal .actions .save { background: var(--accent2); color: #1d1812; border: none; }
@@ -1691,8 +1696,15 @@ document.getElementById("clearb").onclick = async () => {
       ${h.found ? h.headline : "NO HANDOFF DETECTED"}</div>
     ${h.found ? `<div class="slug">${h.slug}</div>` : ""}
     <div class="hint">${h.detail || ""}</div>
+    ${canAct && !h.found
+      ? `<div class="hint">No handoff means ending it now loses what it knows.
+           <b>Close out first</b> asks the session to run its end-of-session
+           ritual, register a handoff, and then end itself — it stays up for a
+           few minutes and the card clears when it is done.</div>`
+      : ""}
     <div class="actions">
       <button class="cancel">Cancel</button>
+      ${canAct && !h.found ? `<button class="save" id="do-endclose">Close out first</button>` : ""}
       ${canAct ? `<button class="danger" id="do-close">Close session</button>
                   <button class="save" id="do-clear">Clear and reboot</button>` : ""}
     </div>
@@ -1725,6 +1737,37 @@ document.getElementById("clearb").onclick = async () => {
   };
   ov.querySelector("#do-clear").onclick = e => act("/api/clear", e.target);
   ov.querySelector("#do-close").onclick = e => act("/api/close-session", e.target);
+
+  // Close-out first does NOT end anything — it hands the session an
+  // instruction and the ritual takes minutes. So this one must not borrow
+  // act()'s ending: dismissing the modal and refreshing a roster the session
+  // is still on would read as "nothing happened".
+  const eb = ov.querySelector("#do-endclose");
+  if (eb) eb.onclick = async e => {
+    const btn = e.target;
+    btn.disabled = true;
+    btn.textContent = "asking…";
+    let out = {};
+    try {
+      out = await (await fetch("/api/end-then-close", { method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ title: sel, side: selSide }) })).json();
+    } catch (err) {
+      out = { ok: false, detail: err.message };
+    }
+    if (!out.ok) {
+      btn.disabled = false;
+      btn.textContent = "retry";
+      ov.querySelector("h2").insertAdjacentHTML("afterend",
+        `<div class="hint warn">${out.detail || "failed"}</div>`);
+      return;
+    }
+    btn.textContent = "asked";
+    ov.querySelector("h2").insertAdjacentHTML("afterend",
+      `<div class="hint okline">${sel} was asked to close out and then end
+         itself. It writes its handoff first, so give it a few minutes — the
+         card goes when the session does.</div>`);
+  };
 };
 
 // ── settings modal (gear) ─────────────────────────────────────────────────

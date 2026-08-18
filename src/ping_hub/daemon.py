@@ -7,6 +7,8 @@ forked. Port 7799. Endpoints:
   GET  /api/threads            roster snapshot (both tabs derive from this)
   GET  /api/thread?side&title  journal tail for one thread
   POST /api/send               {side,title,msg} -> base relay ping --from chris
+  POST /api/end-then-close     {side,title} -> ask the session to close out
+                               (handoff first) and then end itself
   GET  /api/events             SSE stream (roster + message events)
   POST /bridge/event           WSL bridge push (H3b): {kind:roster|ping,...}
 
@@ -203,6 +205,56 @@ def read_commands() -> list[dict]:
 
 GATED_DOC_WIN = CFG.paths.gated_doc
 GATED_DOC_WSL = CFG.paths.gated_doc_wsl
+
+
+def close_out_request(title: str, side: str, port: int = PORT) -> str:
+    """The instruction CLEAR sends a session that has no handoff yet.
+
+    Chris's ruling: when he presses the button he wants the session to close --
+    but a session with nothing on disk closes with its work unwritten. So the
+    modal offers this instead: the session runs its own close-out ritual,
+    registers a handoff, and only then ends itself. The next boot of that
+    codename picks the fresh handoff up.
+
+    Two things this message must get right, both learned the hard way:
+
+    1. It NEVER carries the literal star-command trigger. Receiving sessions'
+       hooks keyword-match relayed text, and a trigger quoted inside a message
+       fires the ritual attributed to Chris -- it happened six-plus times on
+       2026-08-18 and nearly closed a working builder. Spelled out, it reads
+       the same to a human and matches nothing.
+    2. The self-close call is side-shaped. From WSL, 127.0.0.1 is NOT this
+       machine: WSL is NAT'd here, so the hub answers on the default gateway
+       (measured: gateway 200, loopback refused). A wsl session handed the
+       loopback form would write its handoff and then fail to close.
+    """
+    body = '{"title": "%s", "side": "%s"}' % (title, side)
+    if side == "wsl":
+        call = ("HOST=$(ip route show default | awk '{print $3}')   # WSL is "
+                "NAT'd here; the hub is not on this side's loopback\n"
+                "   curl -s -X POST \"http://$HOST:%d/api/close-session\" \\\n"
+                "        -H 'Content-Type: application/json' -d '%s'"
+                % (port, body))
+    else:
+        call = ("Invoke-RestMethod -Method Post -ContentType application/json "
+                "`\n        -Uri http://127.0.0.1:%d/api/close-session "
+                "-Body '%s'" % (port, body))
+    return (
+        "CLOSE OUT, THEN CLOSE YOURSELF — from the hub, Chris pressed the "
+        "button on '%s'.\n\n"
+        "You have no handoff on disk, so ending this terminal now would lose "
+        "what you know. Do it in this order:\n\n"
+        "1. Run your end-of-session ritual. It is the operator command spelled "
+        "star-end (spelled, not typed as the trigger, so this message does not "
+        "fire anyone's hooks in transit): run `base commands show end` and "
+        "execute its canonical steps exactly — handoff written and registered, "
+        "decisions logged.\n\n"
+        "2. THEN end this terminal yourself:\n\n"
+        "   %s\n\n"
+        "That call ends this tab and everything running in it, so make it only "
+        "after the handoff is on disk. If the close-out cannot finish, say so "
+        "by pinging chris and stop — do not call it."
+        % (title, call))
 
 
 def spawn_tab(side: str, claude_args: list[str], cwd: str | None = None,
@@ -869,6 +921,25 @@ class Handler(BaseHTTPRequestHandler):
                 return
             out["unknown"] = unknown
             self._json(out)
+        elif u.path == "/api/end-then-close":
+            # the third way out of the clear modal: do not end the session,
+            # ASK it to close out and then end itself. Confirm first anyway --
+            # a session whose record cannot be confirmed would write its
+            # handoff and then be refused by /api/close-session, which is a
+            # worse outcome than being told up front that it cannot close.
+            from ping_hub import reap
+            title = payload.get("title", "")
+            side = payload.get("side", "win")
+            if not title:
+                self._json({"ok": False, "detail": "title required"}, 400)
+                return
+            ok, why = reap.confirm(reap.find_record(INBOX_ROOT, title))
+            if not ok:
+                self._json({"ok": False, "detail": why}, 409)
+                return
+            sent, detail = engine.send(
+                title, close_out_request(title, side, PORT), side=side)
+            self._json({"ok": sent, "detail": detail}, 200 if sent else 502)
         elif u.path in ("/api/clear", "/api/close-session"):
             # CLEAR ends the session and boots the same codename back with its
             # handoff attached. CLOSE ends it and leaves it ended. Both refuse
