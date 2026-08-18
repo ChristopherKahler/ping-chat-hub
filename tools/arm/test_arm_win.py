@@ -10,7 +10,7 @@ Run with the hub's venv python so ping_hub.reap is importable -- the point of
 the arm is that the record it writes passes the SAME confirm() the CLEAR
 button runs, not one this file re-implements.
 
-    C:/Users/Chris/.ping-hub/venv/Scripts/python.exe test_arm_win.py <script>
+    <hub venv>/Scripts/python.exe test_arm_win.py <cx-relay-watch.py>
 """
 import json
 import os

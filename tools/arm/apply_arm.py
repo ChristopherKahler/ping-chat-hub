@@ -1,12 +1,19 @@
 """Apply the CLEAR self-arm to a cx-relay-watch.py copy.
 
-Two copies of that script run on this machine (Windows: Tools/stt, WSL:
-~/.local/bin) and they differ only in one paragraph of prose, so the arm is
-applied by exact-string replacement rather than by copying a whole file over
-either of them. Idempotent: a copy that already carries the arm is left alone.
+Two copies of that script run on this machine (one per side) and they differ
+only in one paragraph of prose, so the arm is applied by targeted replacement
+rather than by copying a whole file over either of them. Idempotent: a copy
+that already carries the arm is left alone.
 
     python apply_arm.py <path> [--check]
+
+**No path in this file.** The first version restated the target's own store
+constants inside the replacement text, which put a real home directory into a
+public repo -- `tests/test_pubscan.py` caught it. It is also the worse design:
+the patch now DERIVES the store from the target's own `INBOX`, so a copy whose
+paths differ, or move, is patched correctly without this file knowing them.
 """
+import re
 import sys
 from pathlib import Path
 
@@ -19,46 +26,44 @@ NEW_DOC = '''The poll loop also exits when its parent process dies (terminal for
 and after watcher_bound_seconds (cx.toml, default 4h) as a final backstop.
 
 Before any of that it arms the session's .pid record (see arm_pid_record) --
-the one thing it does for sessions Chris opened by hand. Those sessions get
-the record and nothing else: no conduct block, no tombstone, no watcher. A
-session with no BASE_RELAY_AS and no registry entry still exits 0 instantly.
+the one thing it does for sessions opened by hand. Those sessions get the
+record and nothing else: no conduct block, no tombstone, no watcher. A session
+with no BASE_RELAY_AS and no registry entry still exits 0 instantly.
 '''
 
+# The codename can no longer be resolved this early: a hand-opened session has
+# none until it registers, and reading the registry needs the store, which is
+# derived below from the paths the target itself declares.
 OLD_HEAD = '''codename = os.environ.get("BASE_RELAY_AS", "").strip()
 if not codename:
     sys.exit(0)
-
-WIN = os.name == "nt"
-if WIN:
-    INBOX = Path(r"C:\\Users\\Chris\\.base-gbl\\.base\\relay-inbox") / codename
-    CONFIG = Path(r"C:\\Users\\Chris\\.base-gbl\\cx.toml")
-    DOWN = Path(r"C:\\Users\\Chris\\.base-gbl\\cx\\down") / codename
-else:
-    INBOX = Path.home() / ".base-gbl/.base/relay-inbox" / codename
-    CONFIG = Path("/mnt/c/Users/Chris/.base-gbl/cx.toml")
-    DOWN = Path("/mnt/c/Users/Chris/.base-gbl/cx/down") / codename
-
 '''
 
-NEW_HEAD = '''WIN = os.name == "nt"
-# CX_RELAY_ROOT exists so the arm below can be exercised against a throwaway
+NEW_HEAD = '''env_codename = os.environ.get("BASE_RELAY_AS", "").strip()
+# a placeholder, so the path block below can build the roots before the real
+# codename is known; every path is rebuilt once it is
+codename = env_codename or "_cx_unresolved"
+'''
+
+ANCHOR = 'if "--context" in sys.argv:'
+
+BLOCK = '''# CX_RELAY_ROOT exists so the arm below can be exercised against a throwaway
 # store. This module cannot be imported to test it -- importing runs the poll
 # loop and hangs -- so its tests drive the script as a subprocess with
 # --arm-only, and they need somewhere harmless to write. Unset in production.
 _root = os.environ.get("CX_RELAY_ROOT", "").strip()
-STORE = (Path(_root) if _root else
-         Path(r"C:\\Users\\Chris\\.base-gbl\\.base") if WIN else
-         Path.home() / ".base-gbl/.base")
+# derived, never restated: INBOX is <store>/relay-inbox/<codename>, so the
+# store is two levels up. A copy whose paths differ is still patched right.
+STORE = Path(_root) if _root else INBOX.parent.parent
 
 
 def _registered_title() -> str:
     """This session's relay title from the registry, when the environment has
     no codename to give.
 
-    A session Chris opened by hand has none at boot: it acquires one later,
-    when it runs `base relay register --as X`. Reading the registry is what
-    lets those sessions arm at all, and they are exactly the ones CLEAR could
-    not close.
+    A session opened by hand has none at boot: it acquires one later, when it
+    runs `base relay register --as X`. Reading the registry is what lets those
+    sessions arm at all, and they are exactly the ones CLEAR could not close.
     """
     sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip()
     if not sid:
@@ -73,25 +78,19 @@ def _registered_title() -> str:
     return ""
 
 
-env_codename = os.environ.get("BASE_RELAY_AS", "").strip()
-codename = env_codename or _registered_title()
-if not codename:
-    sys.exit(0)
-
+if not env_codename:
+    codename = _registered_title()
+    if not codename:
+        sys.exit(0)
 INBOX = STORE / "relay-inbox" / codename
-if WIN:
-    CONFIG = Path(r"C:\\Users\\Chris\\.base-gbl\\cx.toml")
-    DOWN = Path(r"C:\\Users\\Chris\\.base-gbl\\cx\\down") / codename
-else:
-    CONFIG = Path("/mnt/c/Users/Chris/.base-gbl/cx.toml")
-    DOWN = Path("/mnt/c/Users/Chris/.base-gbl/cx/down") / codename
+DOWN = DOWN.with_name(codename)
 
 # shells a session can be sitting in; the anchor walk climbs through these and
 # stops at anything else, so it can never reach past the tab into a service
 _SHELLS_WIN = ("powershell.exe", "pwsh.exe", "cmd.exe", "bash.exe", "sh.exe",
                "zsh.exe", "fish.exe", "nu.exe")
 _SHELLS_NIX = ("bash", "-bash", "sh", "-sh", "zsh", "-zsh", "dash", "fish")
-# ping_hub.reap.NEVER_KILL, kept in sync by hand: WindowsTerminal.exe is ONE
+# ping_hub.reap.NEVER_KILL, kept in sync by hand: the terminal host is ONE
 # process shared by every tab, so a record pointing at it would close them all
 _NEVER = ("windowsterminal.exe", "explorer.exe", "svchost.exe", "csrss.exe",
           "wininit.exe", "services.exe", "system", "init", "systemd")
@@ -121,6 +120,13 @@ if($found){
 }"""
 
 
+def _cmdline(pid: int) -> str:
+    try:
+        return Path("/proc/%d/cmdline" % pid).read_text().replace("\\0", " ")
+    except OSError:
+        return ""
+
+
 def _proc_nix(pid: int):
     """(comm, ppid, start_ticks) for a Linux pid, or None.
 
@@ -144,10 +150,10 @@ def _anchor():
     """{pid, image, created} for the process whose death ends this session.
 
     NOT this hook's parent. The hook is spawned by claude and its parent is a
-    throwaway shell: an earlier attempt anchored there and recorded bash.exe
-    49472, which was already gone minutes later. A record pointing at a dead
-    pid is worse than no record -- pid reuse is the exact thing confirm()
-    exists to stop.
+    throwaway shell: an earlier attempt anchored there and recorded a bash.exe
+    that was already gone minutes later. A record pointing at a dead pid is
+    worse than no record -- pid reuse is the exact thing confirm() exists to
+    stop.
 
     So: find claude itself (CLAUDE_PID, else climb to it), then climb through
     SHELLS only. That lands on the tab's shell, the same process the hub's
@@ -200,18 +206,11 @@ def _anchor():
     return {"pid": pid, "image": comm, "created": created}
 
 
-def _cmdline(pid: int) -> str:
-    try:
-        return Path("/proc/%d/cmdline" % pid).read_text().replace("\\0", " ")
-    except OSError:
-        return ""
-
-
 def arm_pid_record() -> str:
     """Record the process CLEAR must end, so it can confirm instead of search.
 
     Until now only app-spawned sessions had a .pid, because the hub's boot
-    script wrote one. Anything Chris opened by hand refused to close with "no
+    script wrote one. Anything opened by hand refused to close with "no
     process was recorded" -- confirm-never-discover doing its job against a
     record nobody had written.
 
@@ -265,8 +264,8 @@ if "--arm-only" in sys.argv:
 if not env_codename:
     # Registered by hand, after boot. This session gets the .pid record CLEAR
     # needs and nothing else: the conduct block, the tombstone and the watcher
-    # are cx-session machinery a terminal Chris opened himself never asked for
-    # and did not have a minute ago.
+    # are cx-session machinery a terminal opened by hand never asked for and
+    # did not have a minute ago.
     sys.exit(0)
 
 '''
@@ -282,12 +281,18 @@ def main() -> int:
     if "def arm_pid_record" in src:
         print("already armed: %s" % target)
         return 0
-    for name, old in (("docstring", OLD_DOC), ("head", OLD_HEAD)):
+    for name, old in (("docstring", OLD_DOC), ("head", OLD_HEAD),
+                      ("anchor", ANCHOR)):
         if src.count(old) != 1:
-            print("REFUSING %s: %s anchor matched %d times, not 1"
+            print("REFUSING %s: %s matched %d times, not 1"
                   % (target, name, src.count(old)))
             return 1
-    out = src.replace(OLD_DOC, NEW_DOC).replace(OLD_HEAD, NEW_HEAD)
+    out = (src.replace(OLD_DOC, NEW_DOC).replace(OLD_HEAD, NEW_HEAD)
+              .replace(ANCHOR, BLOCK + ANCHOR))
+    # the target is LF and stays LF: `newline=""` writes what it is given
+    if not re.search(r"\bINBOX\b.*relay-inbox", out):
+        print("REFUSING %s: no INBOX assignment to derive the store from" % target)
+        return 1
     if check:
         print("would patch %s (%d -> %d bytes)" % (target, len(src), len(out)))
         return 0
