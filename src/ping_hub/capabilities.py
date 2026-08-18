@@ -97,6 +97,46 @@ def base(cfg) -> dict:
     return _r(READY, p) if p else _r(ABSENT, f"{cfg.paths.base_bin} not on PATH")
 
 
+def cx_restart(cfg, exists=None) -> dict:
+    """Can this machine restart the hotkey daemon from the app?
+
+    Same ordering rule as cx_ptt() and wsl(): absence of the launcher is
+    checked BEFORE `enabled`, so a Mac reports "no launcher" rather than
+    "a human turned this off".
+    """
+    exists = exists or (lambda p: Path(p).exists())
+    if not exists(cfg.cx_ptt.launcher):
+        return _r(ABSENT, f"no launcher at {cfg.cx_ptt.launcher}")
+    # cx_ptt.enabled DERIVES from cx.toml existing, so consulting it on a
+    # machine that never had cx-ptt turns "not installed" into "a human
+    # switched this off". Third time this inversion has surfaced in this file
+    # (wsl, cx_ptt, now here) -- check the absence explicitly.
+    if not exists(cfg.cx_ptt.cx_toml):
+        return _r(ABSENT, f"no {cfg.cx_ptt.cx_toml}")
+    if cfg.cx_ptt.enabled_override is False:
+        return _r(OFF, "disabled in hub.toml")
+    return _r(READY, str(cfg.cx_ptt.launcher))
+
+
+def audio(cfg, exists=None) -> dict:
+    """Audio device switching, gated on cx-ptt's published list.
+
+    The list is the capability: without it there is nothing to show, and the
+    switch would be a control with no options. Deliberately does NOT shell out
+    to PowerShell to decide -- that call costs 1.2s (measured) and this runs
+    when the settings panel opens.
+    """
+    exists = exists or (lambda p: Path(p).exists())
+    if not exists(cfg.cx_ptt.devices_json):
+        return _r(ABSENT, f"no device list at {cfg.cx_ptt.devices_json}")
+    if not exists(cfg.cx_ptt.cx_toml):
+        return _r(ABSENT, f"no {cfg.cx_ptt.cx_toml}")
+    if cfg.cx_ptt.enabled_override is False:
+        return _r(OFF, "disabled in hub.toml")
+    return _r(READY, str(cfg.cx_ptt.devices_json))
+
+
 def probe_all(cfg, reach=_reachable) -> dict:
     return {"stt": stt(cfg, reach=reach), "tts": tts(cfg), "cx_ptt": cx_ptt(cfg),
-            "wsl": wsl(cfg), "base": base(cfg)}
+            "wsl": wsl(cfg), "base": base(cfg),
+            "cx_restart": cx_restart(cfg), "audio": audio(cfg)}

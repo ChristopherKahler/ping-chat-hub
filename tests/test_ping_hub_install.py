@@ -95,7 +95,8 @@ def test_wsl_absent_on_a_one_sided_machine():
 
 def test_probe_all_covers_every_surface():
     got = caps.probe_all(_cfg(), reach=lambda u, timeout=2.0: (True, ""))
-    assert set(got) == {"stt", "tts", "cx_ptt", "wsl", "base"}
+    assert set(got) == {"stt", "tts", "cx_ptt", "wsl", "base",
+                        "cx_restart", "audio"}
     assert all(r["state"] in (caps.READY, caps.ABSENT, caps.ERROR, caps.OFF)
                for r in got.values())
 

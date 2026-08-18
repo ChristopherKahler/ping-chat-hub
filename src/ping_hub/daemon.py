@@ -489,6 +489,10 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 _VOICES = got
             self._json({"voices": _VOICES, "warming": False})
+        elif u.path == "/api/audio":
+            from ping_hub import cxptt
+            self._json({"devices": cxptt.read_devices(CFG),
+                        "daemon": cxptt.status(CFG)})
         elif u.path == "/api/soundlist":
             media = CFG.paths.sound_dir
             try:
@@ -800,6 +804,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "count": len(doc["pairs"])})
             except OSError as e:
                 self._json({"ok": False, "detail": str(e)}, 500)
+        elif u.path == "/api/cx-restart":
+            from ping_hub import cxptt
+            self._json(cxptt.restart(CFG))
+        elif u.path == "/api/audio":
+            from ping_hub import cxptt
+            out = cxptt.set_device(CFG, str(payload.get("id", "")),
+                                   str(payload.get("kind", "")))
+            # a mic switch rebinds cx-ptt's input stream, which only happens on
+            # restart. Chained here so the page cannot forget, and reported so
+            # it can warn BEFORE the daemon goes down under someone dictating.
+            if out.get("ok") and out.get("needs_restart"):
+                out["restart"] = cxptt.restart(CFG)
+            self._json(out)
         elif u.path == "/api/replacements/import":
             # star-commands -> spoken fixes. `names` is REQUIRED and an empty
             # list imports NOTHING: a favourites import with no favourites must

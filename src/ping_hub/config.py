@@ -454,6 +454,18 @@ class CxPttSection(_Section):
         return self._cfg.probe.exists(self.cx_toml)
 
     @property
+    def enabled_override(self) -> bool | None:
+        """What a HUMAN wrote, or None if nobody did.
+
+        `enabled` folds the override together with a derived presence check,
+        which is right for feature gating but wrong for reporting: a caller
+        that wants to distinguish "not installed" from "switched off" needs
+        the override on its own.
+        """
+        v = self._get("enabled")
+        return None if v is None else bool(v)
+
+    @property
     def cx_toml(self) -> Path:
         return Path(self._derived("cx_toml",
                                   lambda: str(self._cfg.paths.base_gbl / "cx.toml")))
@@ -473,6 +485,29 @@ class CxPttSection(_Section):
     @property
     def python(self) -> str:
         return str(self._get("python", "python"))
+
+    @property
+    def launcher(self) -> Path:
+        """The .cmd that starts the hotkey daemon with its log tee'd. Derived
+        from the desktop, never an operator's literal path."""
+        return Path(self._derived("launcher", self._derive_launcher))
+
+    def _derive_launcher(self) -> str:
+        p = self._cfg.probe
+        for name in ("Work-Channel.cmd", "cx-ptt.cmd"):
+            c = p.home() / "Desktop" / name
+            if p.exists(c):
+                return str(c)
+        return str(p.home() / "Desktop" / "Work-Channel.cmd")
+
+    @property
+    def devices_json(self) -> Path:
+        """Audio devices, published by cx-ptt on its own refresh cycle. The hub
+        reads it rather than shelling out: one program owns the audio module,
+        and a 1.2s PowerShell call has no business on the settings path."""
+        return Path(self._derived(
+            "devices_json",
+            lambda: str(self._cfg.paths.base_gbl / "cx" / "audio-devices.json")))
 
 
 class Config:

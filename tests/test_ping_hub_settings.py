@@ -99,9 +99,14 @@ def test_the_warm_does_not_block_the_caller(monkeypatch):
     assert daemon._VOICES == ["af_heart"]
 
 
-def test_the_warm_thread_is_a_daemon_thread():
+def test_the_warm_thread_is_a_daemon_thread(monkeypatch):
     """It must never hold the process open at shutdown — a 60s voice lookup
-    outliving the hub is worse than no warm at all."""
+    outliving the hub is worse than no warm at all.
+
+    The resolver is injected: left real, this test spawned kokoro for a
+    subprocess the suite promises not to make.
+    """
+    monkeypatch.setattr(daemon, "resolve_voices", lambda t: ["af_heart"])
     t = daemon.start_voice_warm()
     assert t.daemon is True
     t.join(5)

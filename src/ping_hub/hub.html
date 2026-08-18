@@ -1696,6 +1696,7 @@ document.getElementById("gear").onclick = async () => {
     <div class="srow"><label>effort</label><select id="s-effort">
       ${["low", "medium", "high", "xhigh", "max"].map(e => `<option ${(s.spawn_effort || "xhigh") === e ? "selected" : ""}>${e}</option>`).join("")}
     </select></div>
+    <div id="audiosec"></div>
     <h3>spoken word fixes — applied to every transcript</h3>
     <div class="hint">what the model hears on the left, what to send on the right.
       Whole words, case-insensitive. The same list drives the in-app mic and
@@ -1913,6 +1914,7 @@ document.getElementById("gear").onclick = async () => {
 
   // last, and never awaited by anything above it
   fillVoices(ov, s.tts_voice);
+  fillAudio(ov);
 };
 
 // The voice list is the one slow thing behind the gear: answering it can mean
@@ -1945,6 +1947,83 @@ async function fillVoices(ov, current) {
   }
   if (note) { note.textContent = "the speech engine did not answer — `ping-hub doctor`";
               note.className = "hint warn"; }
+}
+
+// Hotkey daemon + audio devices. Machine-gated: the endpoint answers
+// available:false on anything without cx-ptt, and the whole section removes
+// itself rather than rendering dead controls. Lazy, because the settings panel
+// is not allowed to wait on anything again.
+async function fillAudio(ov) {
+  const host = ov.querySelector("#audiosec");
+  if (!host) return;
+  let out;
+  try {
+    out = await (await fetch("/api/audio")).json();
+  } catch (e) { host.remove(); return; }
+  if (!ov.isConnected) return;
+  const dev = out.devices || {}, dae = out.daemon || {};
+  if (!dev.available && !dae.launcher_present) { host.remove(); return; }
+
+  const opts = (list, sel) => (list || []).map(d =>
+    `<option value="${d.id}" ${d.default ? "selected" : ""}>${d.name}</option>`).join("");
+  const stale = dev.stale
+    ? `<div class="hint warn">device list last refreshed ${Math.round(dev.age || 0)}s ago —
+       cx-ptt may not be running</div>` : "";
+  host.innerHTML = `
+    <h3>hotkey daemon &amp; audio (this machine)</h3>
+    ${dev.available ? `${stale}
+      <div class="srow"><label>speaker</label>
+        <select id="a-spk">${opts(dev.playback)}</select></div>
+      <div class="srow"><label>mic</label>
+        <select id="a-mic">${opts(dev.recording)}</select></div>
+      <div class="hint">changing the mic restarts the hotkey daemon — its input
+        stream binds the default device once, when it opens.</div>`
+      : `<div class="hint">no device list published — start cx-ptt to get one.</div>`}
+    ${dae.launcher_present ? `<div class="repbtns">
+        <button id="a-restart" class="repadd">${dae.running
+          ? "restart hotkey daemon" : "start hotkey daemon"}</button></div>
+      <div class="hint" id="a-msg">${dae.running
+        ? "running as pid " + dae.pid : "not running"}</div>` : ""}`;
+
+  const msg = (t, bad) => {
+    const m = host.querySelector("#a-msg");
+    if (m) { m.textContent = t; m.className = bad ? "hint warn" : "hint"; }
+  };
+  const btn = host.querySelector("#a-restart");
+  if (btn) btn.onclick = async () => {
+    const label = btn.textContent;
+    btn.disabled = true; btn.textContent = "working…";
+    let r;
+    try { r = await (await fetch("/api/cx-restart", { method: "POST",
+      headers: {"Content-Type": "application/json"}, body: "{}" })).json(); }
+    catch (e) { r = { ok: false, detail: e.message }; }
+    btn.disabled = false; btn.textContent = label;
+    msg(r.detail || (r.ok ? "done" : "failed"), !r.ok);
+  };
+
+  const switchTo = async (sel, kind) => {
+    const id = sel.value;
+    if (!id) return;
+    sel.disabled = true;
+    // say it BEFORE it happens: a hotkey daemon vanishing mid-dictation with
+    // no warning reads as a crash
+    msg(kind === "mic" ? "switching mic and restarting the hotkey daemon…"
+                       : "switching speaker…");
+    let r;
+    try { r = await (await fetch("/api/audio", { method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ id, kind }) })).json(); }
+    catch (e) { r = { ok: false, detail: e.message }; }
+    sel.disabled = false;
+    if (!r.ok) { msg(r.detail || "the switch failed", true); return; }
+    msg(kind === "mic"
+      ? "mic switched; hotkey daemon " + ((r.restart || {}).ok ? "restarted"
+          : "NOT restarted — " + ((r.restart || {}).detail || "unknown"))
+      : "speaker switched");
+  };
+  const spk = host.querySelector("#a-spk"), mic = host.querySelector("#a-mic");
+  if (spk) spk.onchange = () => switchTo(spk, "speaker");
+  if (mic) mic.onchange = () => switchTo(mic, "mic");
 }
 
 // ── resizable sidebar (width persists) ────────────────────────────────────
