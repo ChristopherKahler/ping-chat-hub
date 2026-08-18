@@ -142,8 +142,8 @@ try {
   check(out.broodInSquads.length === 0,
     "no brood badge in Squads, where nothing is collapsed");
 
-  check(out.disc && out.disc.w >= 28 && out.disc.h >= 28,
-    `the disclosure is a thumb target (${JSON.stringify(out.disc)})`);
+  check(out.disc && out.disc.w >= 44 && out.disc.h >= 44,
+    `the disclosure is a 44px thumb target (${JSON.stringify(out.disc)})`);
   const off = out.rects.filter(r => r.l < 0 || r.r > 412);
   check(out.rects.length > 0 && off.length === 0,
     `every card sits inside 412px with the drawer open (${out.rects.length} cards, ` +

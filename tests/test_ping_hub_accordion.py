@@ -77,14 +77,15 @@ def test_collapse_state_persists_per_parent():
 
 
 def test_the_disclosure_is_a_thumb_target():
-    """412px is a first-class surface; a glyph you have to aim at is not a
-    control."""
+    """G0 section 3 approved >=44px. It shipped at 28 once, with the test
+    written to match the code instead of the design -- both numbers moved
+    together, so nothing caught it."""
     css = hub_html()
     rule = css[css.index(".disc {"):]
     rule = rule[:rule.index("}")]
     for prop in ("min-width", "min-height"):
         m = re.search(prop + r":\s*(\d+)px", rule)
-        assert m and int(m.group(1)) >= 28, f"{prop} too small for a thumb"
+        assert m and int(m.group(1)) >= 44, f"{prop} below the 44px approved in G0"
 
 
 def test_collapsing_hides_children_without_hiding_them_from_squads():
