@@ -932,6 +932,13 @@ document.getElementById("spawn").onclick = async ev => {
      </div>
      <div class="row spr"><select id="sp-ws" class="spsel" title="workspace"></select></div>
      <div class="row spr"><select id="sp-parent" class="spsel" title="parent to report to"></select></div>
+     <div class="row spr"><select id="sp-model" class="spsel" title="model for this session">
+       <option value="">model — settings default</option>
+       <option>fable</option><option>opus</option><option>sonnet</option></select>
+       <select id="sp-effort" class="spsel" title="effort for this session">
+       <option value="">effort — settings default</option>
+       <option>low</option><option>medium</option><option>high</option>
+       <option>xhigh</option><option>max</option></select></div>
      <div class="row spr"><label class="spchk"><input type="checkbox" id="sp-boot-ping" checked>
        auto report to parent on boot (uncheck when a ping is already inbound for it)</label></div>
      <div class="row spr"><label class="spchk"><input type="checkbox" id="sp-gated">
@@ -988,6 +995,8 @@ document.getElementById("spawn").onclick = async ev => {
     boot: p.querySelector("#sp-boot-ping").checked,
     gated: p.querySelector("#sp-gated").checked,
     pf: p.querySelector("#sp-pf").value, proj: p.querySelector("#sp-proj").value,
+    model: p.querySelector("#sp-model").value,
+    effort: p.querySelector("#sp-effort").value,
     hf: p.querySelector("#sp-hf").value,
     hand: [...p.querySelector("#sp-hand").selectedOptions].map(o => o.value),
     ff: p.querySelector("#sp-ff").value,
@@ -1014,6 +1023,8 @@ document.getElementById("spawn").onclick = async ev => {
   setv("#sp-ws", saved.ws);
   await fill();
   setv("#sp-parent", saved.parent);
+  setv("#sp-model", saved.model);
+  setv("#sp-effort", saved.effort);
   setv("#sp-proj", saved.proj);
   const setmv = (id, vals) => { const el = p.querySelector(id);
     (Array.isArray(vals) ? vals : vals ? [vals] : []).forEach(v => {
@@ -1090,6 +1101,8 @@ document.getElementById("spawn").onclick = async ev => {
       body: JSON.stringify({ side, cwd, gated,
         prompt: p.querySelector("#sp-prompt").value,
         parent,
+        model: p.querySelector("#sp-model").value,
+        effort: p.querySelector("#sp-effort").value,
         report_boot: p.querySelector("#sp-boot-ping").checked,
         project: p.querySelector("#sp-proj").value,
         handoffs: [...p.querySelector("#sp-hand").selectedOptions].map(o => o.value),

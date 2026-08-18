@@ -157,6 +157,33 @@ def start_voice_warm() -> threading.Thread:
     return t
 
 
+MODELS = ("fable", "opus", "sonnet")
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
+
+def model_effort_args(settings: dict, model=None, effort=None) -> list[str]:
+    """--model/--effort for a spawn: launcher choice first, settings second.
+
+    ONE helper for both sources, because the opus 1M wrap has to apply to
+    whichever wins. If it only wrapped the settings value, picking `opus` in
+    the launcher would quietly boot a different context window than picking
+    `opus` in settings -- same word on screen, different session.
+
+    An unrecognised value is DROPPED rather than forwarded: the CLI would
+    reject it and the tab would die on boot with an error Chris never sees,
+    since the spawn window closes with it.
+    """
+    args: list[str] = []
+    m = str(model or "").strip() or str(settings.get("spawn_model") or "").strip()
+    e = str(effort or "").strip() or str(settings.get("spawn_effort") or "").strip()
+    if m in MODELS:
+        # opus always boots the 1M-context variant (Chris directive)
+        args += ["--model", "opus[1m]" if (m == "opus" and CFG.spawn.opus_1m) else m]
+    if e in EFFORTS:
+        args += ["--effort", e]
+    return args
+
+
 def read_commands() -> list[dict]:
     """Star commands from the WSL-owned commands.toml. READ ONLY — this file
     belongs to base, and nothing here ever writes it.
@@ -701,13 +728,8 @@ class Handler(BaseHTTPRequestHandler):
             args = ["--dangerously-skip-permissions"]
             if CFG.spawn.disallowed_tools:
                 args += ["--disallowedTools", ",".join(CFG.spawn.disallowed_tools)]
-            if s.get("spawn_model"):
-                m = s["spawn_model"]
-                # opus always boots the 1M-context variant (Chris directive)
-                args += ["--model",
-                         "opus[1m]" if (m == "opus" and CFG.spawn.opus_1m) else m]
-            if s.get("spawn_effort"):
-                args += ["--effort", s["spawn_effort"]]
+            args += model_effort_args(s, payload.get("model"),
+                                      payload.get("effort"))
             try:
                 pre_trust(side, cwd or (wsl_home_linux() if side == "wsl"
                                         else str(Path.home())))
