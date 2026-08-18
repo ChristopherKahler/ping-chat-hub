@@ -772,7 +772,12 @@ class Engine:
             r = proc.run(
                 [CFG.paths.base_bin, "relay", "ping", "--to", title,
                  "--from", sender, "--msg", msg],
-                capture_output=True, text=True, timeout=15, encoding="utf-8", errors="replace",
+                # 60s, not 15: base relay ping measured 4-40s on 2026-08-18
+                # (machine-wide base slowdown, cause in the base repo, under
+                # investigation). At 15s the hub reported failure on sends
+                # that had ALREADY delivered - a false failure is worse than
+                # a slow one.
+                capture_output=True, text=True, timeout=60, encoding="utf-8", errors="replace",
             )
             return r.returncode == 0, (r.stdout + r.stderr).strip()
         except (OSError, subprocess.TimeoutExpired) as e:
