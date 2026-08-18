@@ -119,6 +119,20 @@ def process_facts(pid: int, query=None, side: str = "win") -> dict | None:
     return doc if isinstance(doc, dict) and doc.get("image") else None
 
 
+def wsl_cmd(script: str) -> list[str]:
+    """A wsl.exe invocation that survives a hostile working directory.
+
+    EVERY wsl.exe call passes an explicit --cd to a LINUX path. Without it WSL
+    inherits the caller's cwd, and the hub daemon runs from system32 under a
+    scheduled task: WSL tries to chdir /mnt/c/WINDOWS/system32, the 9p mount is
+    dead on this box, and the process never starts. The failure looks like the
+    thing you asked for refusing -- "pid N is still running" -- not like a
+    chdir error, because the kill simply never ran. Measured at G2, 2026-08-18;
+    the spawn path already had this rule.
+    """
+    return ["wsl.exe", "--cd", "/", "-e", "sh", "-c", script]
+
+
 def _wsl_facts(pid: int) -> dict | None:
     """A Linux pid's image and start time, asked of WSL.
 
@@ -128,8 +142,7 @@ def _wsl_facts(pid: int) -> dict | None:
     a tick count fed to it would be silently truncated to its first 19 digits
     and compare equal to a different instant. Compare like with like.
     """
-    r = proc.run(["wsl.exe", "-e", "sh", "-c",
-                  f"cat /proc/{int(pid)}/stat 2>/dev/null"],
+    r = proc.run(wsl_cmd(f"cat /proc/{int(pid)}/stat 2>/dev/null"),
                  capture_output=True, text=True, timeout=20)
     line = (r.stdout or "").replace(chr(0), "").strip()
     if not line:
@@ -192,8 +205,8 @@ def reap(inbox_root: Path, title: str, query=None, kill=None) -> tuple[bool, str
     if side == "wsl":
         # taskkill cannot reach inside WSL. Kill the process group so the
         # shell's children go with it, the way /T does on the Windows side.
-        r = proc.run(["wsl.exe", "-e", "sh", "-c",
-                      f"kill -TERM -{int(pid)} 2>/dev/null || kill -TERM {int(pid)}"],
+        r = proc.run(wsl_cmd(f"kill -TERM -{int(pid)} 2>/dev/null "
+                             f"|| kill -TERM {int(pid)}"),
                      capture_output=True, text=True, timeout=30)
     else:
         r = proc.run(["taskkill", "/PID", str(pid), "/T", "/F"],

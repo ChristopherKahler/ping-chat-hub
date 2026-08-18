@@ -286,3 +286,23 @@ def test_find_record_prefers_the_windows_store(tmp_path):
     reap.write_record(tmp_path, "t", 4242, "claude", "x", side="win")
     got = reap.find_record(tmp_path, "t")
     assert got["pid"] == 4242
+
+
+def test_every_wsl_call_carries_an_explicit_cd():
+    """The hub daemon runs from system32 under a scheduled task. Without --cd
+    WSL inherits that cwd, tries to chdir /mnt/c/WINDOWS/system32 on a dead 9p
+    mount, and never starts -- so the kill silently does not run and the close
+    reports "pid N is still running". Asserted on the BUILT command, because
+    the call site looked correct while the command was not."""
+    cmd = reap.wsl_cmd("true")
+    assert cmd[0] == "wsl.exe"
+    assert "--cd" in cmd and cmd[cmd.index("--cd") + 1].startswith("/")
+    assert cmd.index("--cd") < cmd.index("-e"), "--cd must precede the command"
+
+
+def test_no_wsl_invocation_in_reap_bypasses_the_helper():
+    """One builder, or the next hostile-cwd bug is a new call site."""
+    from pathlib import Path
+    src = Path(reap.__file__).read_text(encoding="utf-8")
+    code = chr(10).join(l.split("#")[0] for l in src.splitlines())
+    assert code.count('"wsl.exe"') == 1
