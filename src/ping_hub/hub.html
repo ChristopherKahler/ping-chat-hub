@@ -111,6 +111,12 @@
   .repadd { background: var(--panel2); border: 1px solid var(--line);
     color: var(--accent); border-radius: 6px; padding: 7px 12px;
     cursor: pointer; font-size: 14px; margin-top: 6px; }
+  /* accordion: the disclosure is a real thumb target, not a glyph you have to
+     aim at -- 412px is a first-class surface */
+  .disc { display: inline-block; min-width: 28px; min-height: 28px; line-height: 28px;
+    text-align: center; color: var(--accent); cursor: pointer; user-select: none;
+    margin-right: 2px; }
+  .th.kid { padding-left: 26px; border-left: 2px solid var(--line); }
   .repbtns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
   .repbtns .repadd { margin-top: 0; }
   .cmdrow .have { color: var(--dim); font-size: 12px; flex: 0 0 auto; }
@@ -536,9 +542,74 @@ function updateWorking() {
   } else if (w) w.remove();
 }
 
+// ── parent/child accordion ─────────────────────────────────────────────────
+// Grouping is one level deep on purpose: relations.json is a flat map, not a
+// tree, and a nesting folder tree is unreadable at 412px. A child whose parent
+// is not in the roster renders TOP LEVEL -- an orphan swallowed by a missing
+// parent is a session Chris cannot see.
+const ACC_KEY = "acc-collapsed";
+function accState() {
+  try { return JSON.parse(localStorage.getItem(ACC_KEY) || "{}"); } catch { return {}; }
+}
+function accCollapsed(key) { return !!accState()[key]; }
+function accToggle(key) {
+  const st = accState();
+  st[key] ? delete st[key] : st[key] = 1;
+  localStorage.setItem(ACC_KEY, JSON.stringify(st));
+  renderList();
+}
+
+function groupByParent(items) {
+  const key = t => t.side + ":" + t.title;
+  // the markers live on the roster objects and outlive one render, so a card
+  // that has moved keeps a grouping it no longer has -- clear before grouping
+  for (const t of items) { t._child = false; t._under = ""; t._kids = 0; t._key = key(t); }
+  // parent is stored as a bare title; match within the same side, which is
+  // how relations.json writes it (side:title -> side:title)
+  const byTitle = new Map(items.map(t => [t.side + ":" + t.title, t]));
+  const kids = new Map();
+  for (const t of items) {
+    const pk = t.parent ? t.side + ":" + t.parent : "";
+    if (pk && byTitle.has(pk)) {
+      if (!kids.has(pk)) kids.set(pk, []);
+      kids.get(pk).push(t);
+    }
+  }
+  const out = [];
+  for (const t of items) {
+    const k = key(t);
+    const pk = t.parent ? t.side + ":" + t.parent : "";
+    if (pk && byTitle.has(pk)) continue;     // emitted under its parent below
+    t._kids = (kids.get(k) || []).length;
+    t._key = k;
+    out.push(t);
+    for (const c of kids.get(k) || []) {
+      c._child = true;
+      c._under = k;
+      out.push(c);
+    }
+  }
+  return out;
+}
+
+// what a collapsed parent must still show: a brood that swallows a screaming
+// child is a defect, so the counts come UP
+function broodBadge(t, items) {
+  if (!t._kids || !accCollapsed(t._key)) return "";
+  const kids = items.filter(x => x._under === t._key);
+  const esc = kids.filter(x => x.esc).length;
+  const live = kids.filter(x => x.active || x.watching).length;
+  return `<span class="badge orch" title="collapsed children">▸ ${t._kids}` +
+         (live ? ` · ${live} live` : "") + (esc ? ` · ${esc} esc!` : "") + `</span>`;
+}
+
 function renderList() {
   const list = document.getElementById("threads");
-  let items = roster.filter(t => tab === "squad" ? t.squad : !t.squad);
+  // Squads is the flat, always-visible list of every CHILD session (Chris's
+  // order). Terminals shows everything, grouped -- squad membership survives
+  // as the .badge.squad the card already renders, so no session can be absent
+  // from both tabs, which the old `!t.squad` filter made possible.
+  let items = tab === "squad" ? roster.filter(t => t.parent) : roster.slice();
   // hidden cards: manual hide via the pencil popup; a hidden codename whose
   // session id CHANGED has re-registered — auto-resurrect it (Chris rule)
   const hid = hubCfg.hidden || {};
@@ -575,6 +646,7 @@ function renderList() {
     return (ia === -1 ? 1e9 : ia) - (ib === -1 ? 1e9 : ib);
   });
   lastRendered = items.map(t => t.side + ":" + t.title);
+  if (tab === "term") items = groupByParent(items);
   list.innerHTML = "";
   if (spawnWatch && tab === "term") {
     const b = document.createElement("div");
@@ -584,6 +656,7 @@ function renderList() {
     list.appendChild(b);
   }
   for (const t of items) {
+    if (tab === "term" && t._child && accCollapsed(t._under)) continue;
     const el = document.createElement("div");
     const statePill = t.active ? '<span class="badge act">● active</span>'
                     : (t.watching ? '<span class="badge watch">watching</span>' : '');
@@ -600,13 +673,18 @@ function renderList() {
     const ghostPill = ghost
       ? '<span class="badge ghostb" title="relay mirror — this codename is registered on this side so pings route, but the session runs on the other side">◌ relay</span>'
       : '';
-    el.innerHTML = `<div class="name"><span class="sweep" title="sweep out of the list (find it under hidden)">🧹</span>${t.display || t.title} ${ghostPill}${statePill}
+    if (t._child) el.classList.add("kid");
+    const disc = t._kids
+      ? `<span class="disc" data-k="${t._key}" title="collapse this session's children">${accCollapsed(t._key) ? "▸" : "▾"}</span>`
+      : "";
+    el.innerHTML = `<div class="name">${disc}<span class="sweep" title="sweep out of the list (find it under hidden)">🧹</span>${t.display || t.title} ${ghostPill}${statePill}
         ${(t.projects || []).map(p => `<span class="badge proj">${p.replace(/</g, "&lt;")}</span>`).join("")}
         ${dead ? '<span class="badge boot" title="boot a fresh session onto this codename">▶ boot</span>' : ''}
         <span class="edit" title="rename card">✎</span></div>
       <div class="badges">
         ${t.parent ? `<span class="badge chld">↳ ${t.parent}</span>` : ""}
         ${t.children ? `<span class="badge orch">⌂ orchestrator · ${t.children}</span>` : ""}
+        ${broodBadge(t, items)}
         <span class="badge">${t.side}</span>
         ${t.model ? `<span class="badge model">${t.model}${t.effort ? "·" + t.effort : ""}</span>` : ""}
         ${ctxBadge(t)}
@@ -744,6 +822,8 @@ function renderList() {
         body: JSON.stringify({ side: t.side, cwd: t.cwd || "", title: t.title }) });
       renderList();
     };
+    const dsc = el.querySelector(".disc");
+    if (dsc) dsc.onclick = e => { e.stopPropagation(); accToggle(dsc.dataset.k); };
     list.appendChild(el);
   }
   if (hiddenItems.length) {
