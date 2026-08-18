@@ -440,7 +440,7 @@ class Handler(BaseHTTPRequestHandler):
             side = (q.get("side") or ["win"])[0]
             with engine.lock:
                 t = dict(engine.threads.get(f"{side}:{title}") or {})
-            ok, why = reap.confirm(reap.read_record(INBOX_ROOT, title))
+            ok, why = reap.confirm(reap.find_record(INBOX_ROOT, title))
             match = handoffs.for_session(
                 handoffs.listing(CFG.paths.base_bin), title, t.get("projects"))
             self._json({"title": title, "side": side,

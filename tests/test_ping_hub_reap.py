@@ -192,3 +192,97 @@ def test_the_record_round_trips(inbox):
     got = reap.read_record(inbox, TITLE)
     assert got["pid"] == 99 and got["side"] == "wsl"
     assert json.loads(reap.record_path(inbox, TITLE).read_text())["image"] == "powershell.exe"
+
+
+# ── the WSL side ─────────────────────────────────────────────────────────────
+# Closing a wsl session returned "no process was recorded" while its record sat
+# on disk, correct and complete, in the WSL store. The write was never broken:
+# the READ path was single-sided, four layers deep.
+
+WSL_REC = {"pid": 3527758, "image": "claude", "created": "48344893", "side": "wsl"}
+WIN_REC = {"pid": 4242, "image": "claude", "created": "2026-08-18T09:00:00-05:00"}
+
+
+def test_a_win_record_resolves_to_the_windows_root(tmp_path):
+    assert reap.inbox_root_for("win", tmp_path) == tmp_path
+
+
+def test_a_wsl_record_resolves_to_the_wsl_store(tmp_path):
+    class C:
+        wsl = type("W", (), {"home_unc": r"\wsl.localhost\D\home\u"})()
+
+    got = reap.inbox_root_for("wsl", tmp_path, cfg=C())
+    assert got is not None and got.parts[-3:] == (".base-gbl", ".base", "relay-inbox")
+
+
+def test_no_wsl_side_refuses_rather_than_using_the_windows_root(tmp_path):
+    """Falling back would ask Windows about a Linux pid and get a confident
+    'not running' for a session that is running."""
+    class C:
+        wsl = type("W", (), {"home_unc": ""})()
+
+    assert reap.inbox_root_for("wsl", tmp_path, cfg=C()) is None
+
+
+def test_confirm_asks_the_side_the_record_names(tmp_path):
+    asked = {}
+
+    def query(pid):
+        return None
+
+    def sided(pid, query=None, side="win"):
+        asked["side"] = side
+        return {"image": "claude", "created": "48344893"}
+
+    import ping_hub.reap as r
+    real, r.process_facts = r.process_facts, sided
+    try:
+        ok, why = r.confirm(WSL_REC)
+    finally:
+        r.process_facts = real
+    assert asked["side"] == "wsl" and ok is True
+
+
+def test_a_tick_count_is_compared_raw_not_normalised():
+    """_norm reconciles timestamp SPELLINGS. Fed /proc field 22 it would
+    truncate the tick count to 19 characters and call two different starts
+    equal — the same offset-spelling trap that has bitten this stack three
+    times, arriving from the other direction."""
+    ok, why = reap.confirm(WSL_REC,
+                           query=lambda pid: {"image": "claude", "created": "48344893"})
+    assert ok is True
+    bad, why = reap.confirm(WSL_REC,
+                            query=lambda pid: {"image": "claude", "created": "48344999"})
+    assert bad is False and "pid was reused" in why
+
+
+def test_a_record_with_no_side_is_treated_as_windows():
+    """The records already on disk predate the key, and they are all win."""
+    ok, _ = reap.confirm(WIN_REC, query=lambda pid: {
+        "image": "claude", "created": "2026-08-18T09:00:00-0500"})
+    assert ok is True
+
+
+def test_a_wsl_reap_never_calls_taskkill(tmp_path):
+    used = []
+    reap.write_record(tmp_path, "t", 3527758, "claude", "48344893", side="wsl")
+    alive = [{"image": "claude", "created": "48344893"}]
+
+    def query(pid):
+        return alive[0]
+
+    def kill(pid):
+        used.append(pid)
+        alive[0] = None
+        return True, "killed"
+
+    ok, why = reap.reap(tmp_path, "t", query=query, kill=kill)
+    assert used == [3527758], why
+
+
+def test_find_record_prefers_the_windows_store(tmp_path):
+    """Windows first: it is the common case and the cheap one — the WSL root
+    costs a UNC stat."""
+    reap.write_record(tmp_path, "t", 4242, "claude", "x", side="win")
+    got = reap.find_record(tmp_path, "t")
+    assert got["pid"] == 4242
