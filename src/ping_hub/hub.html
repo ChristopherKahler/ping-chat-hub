@@ -1623,12 +1623,43 @@ document.getElementById("clearb").onclick = async () => {
 const ACTIONS = [["start", "mic open"], ["finish", "mic close"], ["send", "delivered"],
                  ["receive", "reply spoken"], ["cancel", "cancel / fail"]];
 document.getElementById("gear").onclick = async () => {
-  const [s, wavs, voices, reps] = await Promise.all([
-    (await fetch("/api/settings")).json(),
-    (await fetch("/api/soundlist")).json(),
-    (await fetch("/api/voices")).json(),
-    (await fetch("/api/replacements")).json(),
-  ]);
+  // ONE modal, always. Without this guard every click while the panel was
+  // loading appended another overlay AND fired another /api/voices; four
+  // clicks measured four stacked modals.
+  const open = document.querySelector("#overlay.settings");
+  if (open) { (open.querySelector("input, select, button") || open).focus(); return; }
+
+  // Shell FIRST, data after. The voice list can take seconds because kokoro
+  // loads a 310MB model to answer it, and it fills exactly ONE select — it has
+  // no business holding the sound rows, the word fixes or Save behind it.
+  const ov = document.createElement("div");
+  ov.id = "overlay";
+  ov.className = "settings";
+  ov.innerHTML = `<div id="modal">
+    <h2>settings</h2>
+    <div id="set-body"><div class="hint">loading…</div></div>
+    <div class="actions"><button class="cancel">Cancel</button>
+      <button class="save" disabled>Save</button></div>
+  </div>`;
+  document.body.appendChild(ov);
+  // cancel works during the load: a panel you cannot dismiss while it thinks
+  // is the thing that felt like an error
+  ov.onclick = e => { if (e.target === ov) ov.remove(); };
+  ov.querySelector(".cancel").onclick = () => ov.remove();
+
+  let s, wavs, reps;
+  try {
+    [s, wavs, reps] = await Promise.all([
+      (await fetch("/api/settings")).json(),
+      (await fetch("/api/soundlist")).json(),
+      (await fetch("/api/replacements")).json(),
+    ]);
+  } catch (e) {
+    ov.querySelector("#set-body").innerHTML =
+      `<div class="hint warn">could not load settings — ${e.message}</div>`;
+    return;
+  }
+  if (!ov.isConnected) return;      // dismissed while it was loading
   const snd = s.sounds || {};
   const opts = w => ['<option value="default">default tone</option>']
     .concat(wavs.map(n => {
@@ -1638,10 +1669,7 @@ document.getElementById("gear").onclick = async () => {
   const rows = ACTIONS.map(([k, lbl]) =>
     `<div class="srow"><input type="checkbox" data-k="${k}" ${snd[k] === false ? "" : "checked"}>
      <label>${lbl}</label><select data-w="${k}">${opts(snd[k + "_wav"] || "default")}</select></div>`).join("");
-  const ov = document.createElement("div");
-  ov.id = "overlay";
-  ov.innerHTML = `<div id="modal">
-    <h2>settings</h2>
+  ov.querySelector("#set-body").innerHTML = `
     <h3>sound effects — per action</h3>${rows}
     <h3>list</h3>
     <div class="srow"><input type="checkbox" id="s-hide" ${s.hide_inactive ? "checked" : ""}>
@@ -1652,8 +1680,8 @@ document.getElementById("gear").onclick = async () => {
     <div class="srow"><input type="checkbox" id="s-tts" ${s.tts_on ? "checked" : ""}>
       <label style="width:auto">speak inbound pings aloud</label></div>
     <div class="srow"><label>voice</label><select id="s-ttsvoice">
-      ${voices.map(v => `<option ${(s.tts_voice || "af_heart") === v ? "selected" : ""}>${v}</option>`).join("")}
-    </select></div>
+      <option>${s.tts_voice || "af_heart"}</option></select></div>
+    <div class="hint" id="voicenote">loading voices…</div>
     <div class="srow"><label>speak thread</label><select id="s-ttsthread">
       <option value="">— none —</option>
       ${roster.filter(t => !t.gone).map(t => {
@@ -1679,10 +1707,8 @@ document.getElementById("gear").onclick = async () => {
       <button id="rep-all" class="repadd">import all</button>
       <button id="rep-fav" class="repadd">import favourites</button>
     </div>
-    <div id="repmsg" class="hint"></div>
-    <div class="actions"><button class="cancel">Cancel</button><button class="save">Save</button></div>
-  </div>`;
-  document.body.appendChild(ov);
+    <div id="repmsg" class="hint"></div>`;
+  ov.querySelector(".save").disabled = false;
 
   // rebuilt from the array on every change so row indices never drift out of
   // step with the data behind them
@@ -1861,8 +1887,6 @@ document.getElementById("gear").onclick = async () => {
     };
   };
 
-  ov.onclick = e => { if (e.target === ov) ov.remove(); };
-  ov.querySelector(".cancel").onclick = () => ov.remove();
   ov.querySelector(".save").onclick = async () => {
     const sounds = {};
     ov.querySelectorAll("input[data-k]").forEach(cb => { sounds[cb.dataset.k] = cb.checked; });
@@ -1886,7 +1910,42 @@ document.getElementById("gear").onclick = async () => {
     ov.remove();
     renderList();
   };
+
+  // last, and never awaited by anything above it
+  fillVoices(ov, s.tts_voice);
 };
+
+// The voice list is the one slow thing behind the gear: answering it can mean
+// waking kokoro, which loads a 310MB model. The server now answers inside 2s
+// with {warming:true} instead of blocking, so this polls until the real list
+// lands. "warming" is not "one voice" — saying so in the note is the whole
+// point, because a silently short list reads as a broken install.
+async function fillVoices(ov, current) {
+  const sel = ov.querySelector("#s-ttsvoice");
+  const note = ov.querySelector("#voicenote");
+  if (!sel) return;
+  const want = current || "af_heart";
+  for (let attempt = 0; attempt < 15; attempt++) {
+    let out;
+    try {
+      out = await (await fetch("/api/voices")).json();
+    } catch (e) {
+      if (note) { note.textContent = "voice list unavailable — " + e.message;
+                  note.className = "hint warn"; }
+      return;
+    }
+    if (!ov.isConnected) return;          // closed while waiting
+    const list = (out && out.voices) || [];
+    const keep = sel.value || want;
+    sel.innerHTML = list.map(v =>
+      `<option ${keep === v ? "selected" : ""}>${v}</option>`).join("");
+    if (!out.warming) { if (note) note.remove(); return; }
+    if (note) note.textContent = "waking the speech engine…";
+    await new Promise(r => setTimeout(r, 2000));
+  }
+  if (note) { note.textContent = "the speech engine did not answer — `ping-hub doctor`";
+              note.className = "hint warn"; }
+}
 
 // ── resizable sidebar (width persists) ────────────────────────────────────
 const sideEl = document.getElementById("side");

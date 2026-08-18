@@ -107,6 +107,56 @@ def save_hub_settings(s: dict) -> None:
         json.dump(s, fh, indent=1)
 
 
+# ── kokoro voice list ────────────────────────────────────────────────────────
+# `say --voices` looks cheap and is not: when kokoro's own daemon is down the
+# CLI starts it and polls for up to 30s (kokoro/say.py:313) while a 310MB ONNX
+# model loads. Measured 163ms with that daemon up, 2.7s forced in-process. A
+# request handler must never be the thing that pays for it.
+VOICE_REQUEST_TIMEOUT = 2.0     # on the request path: answer, never block
+VOICE_WARM_TIMEOUT = 60.0       # off it: wait out the model load, once
+
+
+def resolve_voices(timeout: float) -> list[str] | None:
+    """Voice names, or None meaning "ask again later".
+
+    None is NOT "no voices". Handing back the single default as though it were
+    the whole list would make a temporary stall look like a permanently
+    one-voice engine, and send Chris hunting a broken install that is fine.
+    """
+    say = CFG.tts.command
+    if not say:
+        return [CFG.tts.default_voice]      # engine absent: a real, final answer
+    try:
+        r = proc.run(say + ["--voices"], capture_output=True, text=True,
+                     timeout=timeout, encoding="utf-8", errors="replace")
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    names = sorted(set(re.findall(r"\b([a-z]{2}_[a-z]+)\b", r.stdout or "")))
+    return names or [CFG.tts.default_voice]
+
+
+def warm_voices() -> None:
+    """Pay the model load once, at boot, off every request path."""
+    global _VOICES
+    try:
+        got = resolve_voices(VOICE_WARM_TIMEOUT)
+        if got is not None:
+            _VOICES = got
+    except Exception:
+        pass    # a cosmetic voice list must never take the daemon down with it
+
+
+def start_voice_warm() -> threading.Thread:
+    """Start the warm and RETURN — the bind below does not wait for it.
+
+    A machine with no kokoro is a silent no-op, never a boot error: Albert's
+    install must not care whether he owns a speech engine.
+    """
+    t = threading.Thread(target=warm_voices, daemon=True, name="voice-warm")
+    t.start()
+    return t
+
+
 def read_commands() -> list[dict]:
     """Star commands from the WSL-owned commands.toml. READ ONLY — this file
     belongs to base, and nothing here ever writes it.
@@ -427,24 +477,18 @@ class Handler(BaseHTTPRequestHandler):
             except (OSError, tomllib.TOMLDecodeError) as e:
                 self._json({"error": str(e)}, 500)
         elif u.path == "/api/voices":
-            # Kokoro voice names via `say --voices`, cached for the process
             global _VOICES
             if _VOICES is None:
-                say = CFG.tts.command
-                if not say:
-                    _VOICES = [CFG.tts.default_voice]   # engine absent
-                    self._json(_VOICES)
+                got = resolve_voices(VOICE_REQUEST_TIMEOUT)
+                if got is None:
+                    # the engine is still waking. Answer NOW with the configured
+                    # voice and SAY it is warming, rather than holding the whole
+                    # settings modal for up to 30s. "warming" is a third state:
+                    # not the real list, and not "this machine has one voice".
+                    self._json({"voices": [CFG.tts.default_voice], "warming": True})
                     return
-                try:
-                    r = proc.run(
-                        say + ["--voices"],
-                        capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace",
-                    )
-                    _VOICES = re.findall(r"\b([a-z]{2}_[a-z]+)\b", r.stdout or "")
-                    _VOICES = sorted(set(_VOICES)) or [CFG.tts.default_voice]
-                except (OSError, subprocess.TimeoutExpired):
-                    _VOICES = [CFG.tts.default_voice]
-            self._json(_VOICES)
+                _VOICES = got
+            self._json({"voices": _VOICES, "warming": False})
         elif u.path == "/api/soundlist":
             media = CFG.paths.sound_dir
             try:
@@ -910,6 +954,7 @@ def main() -> None:
     # gateway IP, which cannot reach a 127.0.0.1 bind. Remote access is
     # tailnet-only (the serve is not funneled); LAN exposure is Chris's own
     # network.
+    start_voice_warm()   # background; the bind below does not wait on it
     srv = ThreadingHTTPServer((CFG.hub.bind, PORT), Handler)
     print(f"ping-chat-hub on http://127.0.0.1:{PORT}")
     srv.serve_forever()
