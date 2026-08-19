@@ -52,6 +52,10 @@ WATCH_STALE_SECS = 15          # mirror of base's wake contract constant
 BRIDGE_PORT = CFG.wsl.bridge_port  # WSL bridge, reachable via localhostForwarding
 ROSTER_POLL_SECS = 2.0
 INBOX_POLL_SECS = 1.0
+# cx-ptt publishes its heartbeat every ~30s and the stale budget is 90s, so
+# polling faster than this buys nothing and polling slower loses a whole
+# missed-refresh window.
+CXPTT_POLL_SECS = 20.0
 HUB_TITLE = CFG.hub.standing_title  # the universal pipe — the hub IS this session
 
 
@@ -196,6 +200,14 @@ class Engine:
         # they are not the same fact. Without it the hub announces an outage
         # for the first few seconds of every boot, which is the exact species
         # of lie this fork exists to remove.
+        # cx-ptt gets the same treatment for the same reason: it died at
+        # 2026-08-18 20:36 and nothing noticed for ~16 hours while every
+        # hub-owned service came back by itself. `probed` again separates
+        # "down" from "not asked yet".
+        self.cxptt_state: dict = {"alive": False, "probed": False,
+                                  "enabled": bool(CFG.cx_ptt.enabled),
+                                  "since": "", "detail": "not probed yet"}
+        self._cx_heal = _HealBudget()
         self.bridge_state: dict = {"up": False, "probed": False, "since": "",
                                    "detail": "not probed yet",
                                    "enabled": bool(CFG.wsl.enabled)}
@@ -994,6 +1006,55 @@ class Engine:
         except (OSError, subprocess.TimeoutExpired):
             return ""
 
+    def _cxptt_mark(self, alive: bool, detail: str = "") -> None:
+        """`since` moves only on a CHANGE, so the UI can say how long it has
+        been down rather than how long ago the last poll was."""
+        with self.lock:
+            if self.cxptt_state.get("alive") is not alive:
+                self.cxptt_state["since"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+            self.cxptt_state.update(alive=alive, detail=detail, probed=True,
+                                    enabled=bool(CFG.cx_ptt.enabled))
+
+    def _cxptt_loop(self) -> None:
+        """Notice cx-ptt dead, and bring it back.
+
+        Two instruments, deliberately. The POLL asks the heartbeat file, which
+        costs a stat and a small read — `cxptt.status()` enumerates every
+        Win32_Process through CIM and cannot run on a loop, and a supervisor
+        that cannot look often cannot notice. Only once the decision to act is
+        made does the expensive path run.
+
+        The budget is the bridge's, for the bridge's reason: a restart loop
+        firing every twenty seconds is worse than none at all, because it
+        buries the real failure under identical log lines and keeps a sick
+        machine busy. First attempt free, then 30/60/120/300.
+        """
+        from ping_hub import cxptt
+        was = None
+        while not self._stop.wait(CXPTT_POLL_SECS):
+            beat = cxptt.heartbeat(CFG)
+            alive = bool(beat.get("alive"))
+            self._cxptt_mark(alive, beat.get("detail", ""))
+            if alive != was:      # one honest line per TRANSITION, not per poll
+                print(f"cx-ptt {'up' if alive else 'DOWN'}: "
+                      f"{beat.get('detail', '')}", flush=True)
+                was = alive
+            if alive:
+                self._cx_heal.reset()
+                continue
+            now = time.time()
+            if not self._cx_heal.due(now):
+                continue
+            self._cx_heal.mark(now)
+            try:
+                out = cxptt.restart(CFG)
+            except OSError as e:
+                # a supervisor that dies of the thing it supervises is worse
+                # than no supervisor: it takes the reporting down with it
+                print(f"cx-ptt restart failed: {e}", flush=True)
+                continue
+            print(f"cx-ptt restart: {out.get('detail', '')}", flush=True)
+
     def _bridge_mark(self, up: bool, detail: str = "") -> None:
         """Record bridge liveness. `since` moves only on a CHANGE of state, so
         the UI can say how long it has been down rather than how long ago the
@@ -1261,6 +1322,11 @@ class Engine:
         # resolve a NAT IP and graying threads that never existed
         if CFG.wsl.enabled:
             threading.Thread(target=self._bridge_loop, daemon=True).start()
+        # cx-ptt is Windows-and-cx-ptt-only. On a machine that never had it,
+        # `enabled` derives False from a missing cx.toml and the supervisor
+        # never runs — absent is not a service that needs restarting.
+        if CFG.cx_ptt.enabled and os.name == "nt":
+            threading.Thread(target=self._cxptt_loop, daemon=True).start()
 
     def stop(self) -> None:
         self._stop.set()

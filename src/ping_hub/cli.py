@@ -12,6 +12,7 @@ from __future__ import annotations
 from ping_hub import proc
 
 import argparse
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -79,12 +80,20 @@ def cmd_install(args) -> int:
                            "model_dir": stt["model_dir"]}
         tts = install.provision_tts(home)
         sections["tts"] = {"command": tts["command"]}
+        # cx-ptt is Windows-only (it binds global hotkeys and winsound). On a
+        # Mac that is a machine without the feature, not a failed install.
+        if os.name == "nt":
+            cx = install.provision_cxptt(home, cfg, stt)
+            sections["cx_ptt"] = {"launcher": cx["launcher"], "autostart": True}
+        else:
+            print("\ncx-ptt: Windows only — skipping on this machine")
 
-    if args.deploy_bridge:
-        # off by default: this writes into a live WSL home, and on a two-sided
-        # machine the bridge it replaces may be running right now
+    want_bridge, why = install.bridge_decision(
+        cfg, force=args.deploy_bridge, skip=args.no_deploy_bridge)
+    print(f"\nWSL bridge: {'deploying' if want_bridge else 'skipping'} — {why}")
+    if want_bridge:
         b = install.deploy_bridge(cfg, python=autostart.bridge_python(cfg))
-        print(f"\nbridge deployed to {b['linux_path']}")
+        print(f"bridge deployed to {b['linux_path']}")
         print("bridge autostart:")
         for line in autostart.register_bridge(cfg):
             print(f"  {line}")
@@ -97,6 +106,10 @@ def cmd_install(args) -> int:
     print("\nlogin registration:")
     for line in register_autostart(config.get(), skip=args.no_autostart):
         print(f"  {line}")
+    if not args.no_autostart:
+        # verified, THEN removed — never the other way round
+        for line in autostart.supersede_interim_run_key(config.get()):
+            print(f"  {line}")
 
     print("\nre-checking with the new config:")
     cmd_doctor(args)
@@ -215,8 +228,10 @@ def main(argv: list[str] | None = None) -> int:
     i.add_argument("--no-autostart", action="store_true",
                    help="do not register the hub to start at login")
     i.add_argument("--deploy-bridge", action="store_true",
-                   help="copy the WSL bridge into WSL (overwrites a deployed "
-                        "one, which may be running)")
+                   help="deploy the WSL bridge even when one is already there "
+                        "(it may be running right now)")
+    i.add_argument("--no-deploy-bridge", action="store_true",
+                   help="skip the WSL bridge entirely")
     i.set_defaults(fn=cmd_install)
 
     d = sub.add_parser("doctor", help="what works on this machine, and why not")

@@ -6,6 +6,7 @@ forked. Port 7799. Endpoints:
   GET  /                       hub.html
   GET  /api/threads            roster snapshot (both tabs derive from this)
   GET  /api/bridge             WSL bridge liveness {up, since, detail, enabled}
+  GET  /api/cxptt              cx-ptt daemon liveness {alive, since, detail, enabled}
   GET  /api/thread?side&title  journal tail for one thread
   POST /api/send               {side,title,msg} -> base relay ping --from chris
   POST /api/end-then-close     {side,title} -> ask the session to close out
@@ -478,6 +479,12 @@ class Handler(BaseHTTPRequestHandler):
             # roster is empty, which is exactly when it matters most.
             with engine.lock:
                 self._json(dict(engine.bridge_state))
+        elif u.path == "/api/cxptt":
+            # the same shape and the same reason as /api/bridge: a service the
+            # hub supervises has to be able to report itself dead even when
+            # nothing else on the page would show it
+            with engine.lock:
+                self._json(dict(engine.cxptt_state))
         elif u.path == "/api/thread":
             q = parse_qs(u.query)
             title = (q.get("title") or [""])[0]
@@ -804,11 +811,35 @@ class Handler(BaseHTTPRequestHandler):
                                         else str(Path.home())))
                 # boot briefing: selected project/parent/handoff/fork become
                 # prompt preamble blocks ahead of Chris's own text
-                pieces = ["NO QUESTION DIALOGS: Chris drives from a phone app and "
-                          "will NEVER see an AskUserQuestion dialog (the tool is "
-                          "denied). Ask him questions as a plain relay ping: "
-                          "base relay ping --to chris --msg \"<your question>\" "
-                          "— and continue or idle until his ping comes back."]
+                # The boot duties come FIRST and say so, because something
+                # else in the child's context tells it to render a lettered
+                # handoff menu as the first thing in its reply and it obeys
+                # that literally. Measured on `kestrel` 2026-08-19: 28
+                # transcript records, ONE assistant turn, ZERO tool calls — it
+                # printed the menu and stopped, so it never registered a
+                # status, never armed a wake monitor, and never reported in.
+                # Two of Chris's pings sat unread in its inbox with nothing
+                # watching to deliver them. A session that cannot be woken is
+                # a session that is gone, whatever the card says.
+                pieces = [
+                    "FIRST TURN — do these three BEFORE you render anything "
+                    "else, including any \"pick up where you left off\" list "
+                    "a hook puts in your context (render that after, if at "
+                    "all):\n"
+                    "  1. make a tool call — any tool call. Your wake contract "
+                    "arrives as a system reminder on the first one, and until "
+                    "you have armed it a ping cannot reach you.\n"
+                    "  2. arm the relay wake monitor exactly as that reminder "
+                    "specifies, and write one line to your relay inbox "
+                    "`.status` saying what you are doing.\n"
+                    "  3. report in, per the REPORTING block below.\n"
+                    "Rendering a menu and stopping leaves you unreachable: no "
+                    "status, no waker, pings piling up unread.",
+                    "NO QUESTION DIALOGS: Chris drives from a phone app and "
+                    "will NEVER see an AskUserQuestion dialog (the tool is "
+                    "denied). Ask him questions as a plain relay ping: "
+                    "base relay ping --to chris --msg \"<your question>\" "
+                    "— and continue or idle until his ping comes back."]
                 proj = (payload.get("project") or "").strip()
                 parent = (payload.get("parent") or "").strip()
                 handoffs = [str(h).strip() for h in (payload.get("handoffs") or [])

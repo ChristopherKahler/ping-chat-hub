@@ -26,6 +26,14 @@ SCRIPT = "cx-ptt.py"
 # and we say so rather than presenting a stale list as current.
 DEVICES_STALE_AFTER = 180.0
 
+# Liveness is a different question from list freshness, so it gets its own
+# budget: three missed refreshes, not six. Measured on the live machine
+# 2026-08-19 with the daemon up -- audio-devices.json was 7.1s old while
+# ptt-daemon.log was already 64.9s stale, because the log only writes when
+# something happens and the device list is written on a timer. That is the
+# whole reason the heartbeat is the devices file and not the log.
+HEARTBEAT_STALE_AFTER = 90.0
+
 
 # -- the process tree --------------------------------------------------------
 def list_processes(query=None) -> list[dict]:
@@ -94,6 +102,34 @@ def status(cfg, rows=None, exists=None) -> dict:
             "root": launch_root(daemon, rows)["pid"] if daemon else None,
             "launcher": str(cfg.cx_ptt.launcher),
             "launcher_present": bool(exists(cfg.cx_ptt.launcher))}
+
+
+def heartbeat(cfg, now=None, read=None) -> dict:
+    """Is cx-ptt alive? Asked of the file it rewrites on its own timer.
+
+    The alternative is `status()`, which enumerates every Win32_Process through
+    CIM with a 30s timeout. That is the right instrument for "which pid" and
+    the wrong one for a supervision loop -- it cannot run every few seconds,
+    and a supervisor that cannot check often cannot notice.
+
+    Absent is not dead: a machine that never had cx-ptt has no devices file and
+    must not read as a daemon that died. The caller gets the distinction.
+    """
+    path = cfg.cx_ptt.devices_json
+    try:
+        raw = read(path) if read else Path(path).read_text(encoding="utf-8")
+        doc = json.loads(raw)
+    except (OSError, ValueError) as e:
+        return {"alive": False, "known": False, "age": None,
+                "detail": "no heartbeat file at %s: %s" % (path, e)}
+    age = _age_seconds(doc.get("ts"), now)
+    if age is None:
+        return {"alive": False, "known": False, "age": None,
+                "detail": "heartbeat file at %s carries no usable timestamp" % path}
+    alive = age <= HEARTBEAT_STALE_AFTER
+    return {"alive": alive, "known": True, "age": age,
+            "detail": ("last heartbeat %.0fs ago" % age) if alive else
+                      ("no heartbeat for %.0fs (refresh is ~30s)" % age)}
 
 
 def restart(cfg, rows=None, exists=None, kill=None, start=None, facts=None) -> dict:

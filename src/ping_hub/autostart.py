@@ -16,6 +16,14 @@ from pathlib import Path
 
 HUB_TASK = "ping-chat-hub"
 STT_TASK = "ping-chat-hub-stt"
+CXPTT_TASK = "ping-chat-hub-cxptt"
+
+# The interim wiring this replaces (added by hand 2026-08-19 to stop the
+# bleeding). It is removed only once its replacement is REGISTERED and the
+# registration has been read back — never delete first, or a failed install
+# leaves the machine with neither.
+RUN_KEY = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
+INTERIM_RUN_VALUE = "cx-ptt-work-channel"
 
 
 def _pythonw() -> str:
@@ -35,6 +43,13 @@ def plan(cfg) -> list[tuple[str, list[str]]]:
     out = [(HUB_TASK, hub_command())]
     if cfg.stt.enabled and cfg.stt.autostart and cfg.stt.launcher:
         out.append((STT_TASK, list(cfg.stt.launcher)))
+    # the launcher has to EXIST, not merely resolve. `cx_ptt.launcher` derives a
+    # path whether or not anything is there, and a logon task pointing at a
+    # missing .cmd is a task that fails silently every single boot — which is
+    # indistinguishable, from the outside, from the problem this fixes.
+    if (cfg.cx_ptt.enabled and cfg.cx_ptt.autostart
+            and cfg.cx_ptt.launcher and cfg.probe.exists(cfg.cx_ptt.launcher)):
+        out.append((CXPTT_TASK, [str(cfg.cx_ptt.launcher)]))
     return out
 
 
@@ -115,6 +130,38 @@ def unregister(cfg, run=subprocess.run, platform: str | None = None,
             p.unlink(missing_ok=True)
             lines.append(f"{name}: removed {p}")
     return lines
+
+
+def supersede_interim_run_key(cfg, run=subprocess.run,
+                             platform: str | None = None) -> list[str]:
+    """Retire the hand-added Run key, once its replacement is proven.
+
+    The order is the whole point. A logon mechanism removed before its
+    replacement is confirmed leaves the machine with NEITHER, and the thing
+    both of them start is the one that already went missing for sixteen hours.
+    So: is there a task to replace it, does the registry agree the task exists,
+    and only then is the old value deleted.
+    """
+    platform = platform or ("win" if os.name == "nt" else "mac")
+    if platform != "win":
+        return []
+    if not any(name == CXPTT_TASK for name, _ in plan(cfg)):
+        return [f"{INTERIM_RUN_VALUE}: left in place — no {CXPTT_TASK} to "
+                f"replace it"]
+    r = run(_schtasks_query(CXPTT_TASK), capture_output=True, text=True)
+    if r.returncode != 0:
+        return [f"{INTERIM_RUN_VALUE}: LEFT IN PLACE — {CXPTT_TASK} did not "
+                f"register, so it is still the only thing starting cx-ptt"]
+    q = run(["reg", "query", RUN_KEY, "/v", INTERIM_RUN_VALUE],
+            capture_output=True, text=True)
+    if q.returncode != 0:
+        return [f"{INTERIM_RUN_VALUE}: not present"]
+    d = run(["reg", "delete", RUN_KEY, "/v", INTERIM_RUN_VALUE, "/f"],
+            capture_output=True, text=True)
+    if d.returncode != 0:
+        return [f"{INTERIM_RUN_VALUE}: removal failed, left in place "
+                f"({(d.stdout or d.stderr or '').strip()[:120]})"]
+    return [f"{INTERIM_RUN_VALUE}: removed — superseded by {CXPTT_TASK}"]
 
 
 def status(cfg, run=subprocess.run, platform: str | None = None,

@@ -72,8 +72,11 @@ def _modules():
     for f in sorted(SRC.rglob("*.py")):
         if f.name in EXEMPT or "__pycache__" in f.parts:
             continue
-        # the vendored engines run in their own venvs, not in the daemon
-        if "voice" in f.parts or "bridge" in f.parts:
+        # the vendored engines run in their own venvs, not in the daemon.
+        # `ptt` joins them for the same reason and one more: cx-spawn-hidden
+        # exists precisely to create a console and hide it, so the rule this
+        # tripwire enforces is the opposite of its job.
+        if {"voice", "bridge", "ptt"} & set(f.parts):
             continue
         yield f
 

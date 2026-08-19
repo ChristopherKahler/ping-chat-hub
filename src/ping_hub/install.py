@@ -30,6 +30,7 @@ from ping_hub import proc
 import sys
 import tarfile
 import tempfile
+import tomllib
 import urllib.request
 import venv
 from pathlib import Path
@@ -51,6 +52,16 @@ TTS_PIP = ["kokoro-onnx", "soundfile", "onnxruntime"]
 
 VOICE_SRC = Path(__file__).with_name("voice")
 BRIDGE_SRC = Path(__file__).with_name("bridge") / "wsl_bridge.py"
+# the cx-ptt hotkey daemon and its siblings, vendored 2026-08-19. It was the
+# last piece of this app a human had to start by hand, and it lived in another
+# repo with one account's paths baked into it -- so a recipient of this package
+# got none of it. Copied from the LIVE files rather than that repo: the repo
+# had drifted 5.5KB behind on the daemon and 9KB behind on the waker, and
+# shipping the copy that does not run is not shipping it.
+CXPTT_SRC = Path(__file__).with_name("ptt")
+# on TOP of STT_PIP, into the SAME venv: one app means one interpreter, and
+# cx-ptt loads the very parakeet the STT server already downloaded
+CXPTT_PIP = ["sounddevice", "keyboard"]
 
 
 class InstallError(RuntimeError):
@@ -171,6 +182,74 @@ def provision_stt(home: Path, log=_log) -> dict:
                          {"PING_HUB_STT_MODEL": str(model)})
     return {"launcher": [str(launcher)], "model_dir": str(model),
             "python": str(py), "server": str(server)}
+
+
+def cxptt_launcher_text(py: Path, script: Path, log_path: Path,
+                        env: dict) -> str:
+    """The .cmd that starts the hotkey daemon with its output tee'd.
+
+    Not `_launcher()`: the tee and the window title are load-bearing here.
+    cxptt.restart() always relaunches THROUGH this file precisely so a daemon
+    that restarted itself bare (which it does on any mic change) gets its log
+    and its title back — a button that repairs a degraded daemon rather than
+    re-running it degraded.
+    """
+    sets = "".join(f'set "{k}={v}"\r\n' for k, v in env.items() if v)
+    return (
+        "@echo off\r\n"
+        "rem Work Channel - cx-ptt hotkey daemon. Written by `ping-hub install`;\r\n"
+        "rem every path below came from provisioning, not from an operator.\r\n"
+        "title Work Channel - cx-ptt (hotkeys from cx.toml)\r\n"
+        "setlocal\r\n"
+        f"{sets}"
+        f'powershell -NoProfile -Command "& {{ \'{py}\' -u \'{script}\' 2>&1 '
+        f"| Tee-Object -FilePath '{log_path}' }}\"\r\n"
+        "echo.\r\n"
+        "echo cx-ptt exited. Press any key to close.\r\n"
+        "pause >nul\r\n")
+
+
+def provision_cxptt(home: Path, cfg, stt: dict, log=_log) -> dict:
+    """Install the hotkey daemon the way the speech engines are installed.
+
+    Two things this deliberately does NOT do. It does not download a second
+    parakeet: cx-ptt loads `encoder/decoder/joiner.int8.onnx` + `tokens.txt`,
+    which is exactly the layout `provision_stt` already fetched and verified,
+    so one 650MB download serves both. And it does not build a third venv: the
+    extra requirements over STT_PIP are two packages, and the ruling was one
+    app, one interpreter.
+
+    Never the operator's global python — install.py finding 3, and the
+    hand-written launcher this replaces ran the daemon on C:\\Python312, which
+    is the same interpreter a pip step there once broke.
+    """
+    if not CXPTT_SRC.is_dir():
+        raise InstallError(f"cx-ptt sources missing from the package "
+                           f"({CXPTT_SRC}); reinstall it")
+    root = home / "cxptt"
+    root.mkdir(parents=True, exist_ok=True)
+    for f in sorted(CXPTT_SRC.glob("*.py")):
+        shutil.copyfile(f, root / f.name)
+    log(f"copied {len(list(CXPTT_SRC.glob('*.py')))} cx-ptt scripts to {root}")
+    venv_dir = Path(stt["python"]).parent.parent
+    py = make_venv(venv_dir, STT_PIP + CXPTT_PIP, log)
+    cx_dir = cfg.cx_ptt.devices_json.parent
+    env = {
+        "PING_HUB_BASE_GBL": str(cfg.paths.base_gbl),
+        "PING_HUB_CX_TOML": str(cfg.cx_ptt.cx_toml),
+        "PING_HUB_CX_DIR": str(cx_dir),
+        "PING_HUB_STT_MODEL": stt["model_dir"],
+        "PING_HUB_BASE_WIN": cfg.paths.base_bin,
+        "PING_HUB_WSL_HOME_UNC": cfg.wsl.home_unc or "",
+        "PING_HUB_STANDING_TITLE": cfg.hub.standing_title,
+    }
+    launcher = root / "start-cxptt.cmd"
+    launcher.write_text(
+        cxptt_launcher_text(py, root / "cx-ptt.py",
+                            cx_dir / "ptt-daemon.log", env),
+        encoding="utf-8")
+    log(f"wrote {launcher}")
+    return {"launcher": str(launcher), "dir": str(root), "python": str(py)}
 
 
 def provision_tts(home: Path, log=_log) -> dict:
@@ -312,12 +391,135 @@ def deploy_bridge(cfg, deploy_unc: str | None = None,
             "linux_path": f"{cfg.wsl.bridge_deploy_linux}/wsl-bridge.py"}
 
 
+def merge_hub_toml(existing: str, sections: dict) -> str:
+    """Fold what provisioning decided INTO the config that is already there.
+
+    Re-running the installer on a configured machine used to replace the file
+    with only the four sections `cmd_install` builds, so every hand-pinned key
+    in any other section was gone from the live config (the .bak kept it, which
+    is not the same as keeping it). On this machine that was `[wsl] distro` and
+    `home_linux` — pinned precisely because deriving them had already failed
+    once — plus `[terminal]`, `[cx_ptt]` and `[hub]`.
+
+    Line surgery, not a re-render, because the comments are the point. Chris's
+    hub.toml explains WHY each key is pinned; a value-perfect rewrite that
+    dropped those paragraphs would hand the next operator the same bug with the
+    reasoning deleted. So an existing key has its line replaced in place, a new
+    key is appended inside its section, and a new section goes on the end.
+    Everything else — comments, blank lines, ordering — is untouched.
+
+    A key provisioning just resolved WINS: it is the fresher fact, and it is
+    pointing at something that was created seconds ago.
+    """
+    lines = existing.splitlines()
+    # where each section's body starts and ends, by line index
+    bounds: dict[str, list[int]] = {}
+    current = ""
+    for i, line in enumerate(lines):
+        st = line.strip()
+        if st.startswith("[") and st.endswith("]") and not st.startswith("[["):
+            current = st[1:-1].strip()
+            bounds[current] = [i + 1, i + 1]
+        elif current:
+            if st:
+                bounds[current][1] = i + 1
+    edits: dict[int, str] = {}          # line index -> replacement
+    appends: dict[str, list[str]] = {}  # section -> lines to insert at its end
+    tail: list[str] = []                # whole sections that do not exist yet
+    for name, keys in sections.items():
+        if not keys:
+            continue
+        if name not in bounds:
+            tail.append(f"[{name}]")
+            tail += [f"{k} = {_toml(v)}" for k, v in keys.items()]
+            tail.append("")
+            continue
+        start, end = bounds[name]
+        for k, v in keys.items():
+            rendered = f"{k} = {_toml(v)}"
+            for i in range(start, end):
+                st = lines[i].strip()
+                if st.startswith("#") or "=" not in st:
+                    continue
+                if st.partition("=")[0].strip() == k:
+                    edits[i] = rendered
+                    break
+            else:
+                appends.setdefault(name, []).append(rendered)
+    out: list[str] = []
+    for i, line in enumerate(lines):
+        out.append(edits.get(i, line))
+        for name, (start, end) in bounds.items():
+            if i + 1 == end and name in appends:
+                out += appends.pop(name)
+    for name, extra in appends.items():   # section with an empty body
+        out += extra
+    if tail:
+        if out and out[-1].strip():
+            out.append("")
+        out += tail
+    return "\n".join(out) + "\n"
+
+
+def bridge_decision(cfg, force: bool = False, skip: bool = False,
+                    exists=None) -> tuple[bool, str]:
+    """Should this install deploy the WSL bridge? Decision only, no side effects.
+
+    "One app" means a fresh clone plus `ping-hub install` yields the WHOLE
+    thing, and the bridge was the other half missing from that promise — it sat
+    behind an opt-in flag, so a recipient's install wrote no bridge and
+    registered no unit. So the default flips to ON.
+
+    It does NOT flip to "always": the original flag's warning is still true,
+    this writes into a live WSL home and the bridge it replaces may be running
+    right now. That is a real risk on a configured machine and no risk at all
+    on a bare one, and the two are distinguishable — so ask.
+    """
+    exists = exists or (lambda p: Path(p).exists())
+    if skip:
+        return False, "skipped (--no-deploy-bridge)"
+    if not cfg.wsl.enabled or not cfg.wsl.bridge_deploy_unc:
+        return False, "no WSL side on this machine"
+    if force:
+        return True, "forced (--deploy-bridge)"
+    deployed = Path(cfg.wsl.bridge_deploy_unc) / "wsl-bridge.py"
+    if exists(deployed):
+        return False, (f"a bridge is already deployed at {deployed} and may be "
+                       f"running; pass --deploy-bridge to replace it")
+    return True, "no bridge deployed yet"
+
+
 def write_hub_toml(path: Path, sections: dict, log=_log) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        backup = path.with_suffix(".toml.bak")
-        shutil.copyfile(path, backup)
-        log(f"existing config backed up to {backup.name}")
-    path.write_text(render_hub_toml(sections), encoding="utf-8")
-    log(f"wrote {path}")
+    if not path.exists():
+        path.write_text(render_hub_toml(sections), encoding="utf-8")
+        log(f"wrote {path}")
+        return path
+    backup = path.with_suffix(".toml.bak")
+    shutil.copyfile(path, backup)
+    log(f"existing config backed up to {backup.name}")
+    existing = path.read_text(encoding="utf-8")
+    try:
+        tomllib.loads(existing)
+    except ValueError as e:
+        # louder than a missing file, same as `config.load`: someone edited it
+        # and got it wrong, and merging into a broken file would bury that
+        raise InstallError(f"{path} is not valid TOML ({e}); fix it or move it "
+                           f"aside, then re-run") from e
+    text = merge_hub_toml(existing, sections)
+    # never ship a config this function could not read back. The whole value of
+    # the merge is that the file survives a re-run; a merge that corrupted it
+    # would be strictly worse than the clobber it replaces.
+    try:
+        doc = tomllib.loads(text)
+    except ValueError as e:
+        raise InstallError(f"merging into {path} produced invalid TOML ({e}); "
+                           f"the original is untouched at {backup.name}") from e
+    for name, keys in sections.items():
+        for k in keys:
+            if k not in (doc.get(name) or {}):
+                raise InstallError(f"merge lost [{name}] {k}; the original is "
+                                   f"untouched at {backup.name}")
+    path.write_text(text, encoding="utf-8")
+    log(f"merged {len(sections)} section(s) into {path}")
     return path

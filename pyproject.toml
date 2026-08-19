@@ -30,7 +30,10 @@ claude_chat = ["chat.html"]
 # without these the hub installs as pure python and serves
 # "<h1>hub.html missing</h1>" — the UI and the PWA assets are data files, not
 # modules, so packages.find alone never picks them up
-ping_hub = ["hub.html", "assets/*"]
+# ptt/*.py are DATA, not modules: they are standalone scripts with hyphens in
+# their names, run by the launcher the installer writes. packages.find would
+# never pick them up on its own.
+ping_hub = ["hub.html", "assets/*", "ptt/*.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

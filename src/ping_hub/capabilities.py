@@ -63,7 +63,7 @@ def tts(cfg, exists=None) -> dict:
     return _r(READY, target)
 
 
-def cx_ptt(cfg, exists=None) -> dict:
+def cx_ptt(cfg, exists=None, beat=None) -> dict:
     exists = exists or (lambda p: Path(p).exists())
     # same ordering rule as wsl(): `enabled` DERIVES from whether cx.toml is
     # there, so asking it first reports a machine that never had cx-ptt as a
@@ -76,7 +76,18 @@ def cx_ptt(cfg, exists=None) -> dict:
         return _r(OFF, "disabled in hub.toml")
     if not exists(cfg.cx_ptt.cx_slot):
         return _r(ERROR, f"cx.toml present but {cfg.cx_ptt.cx_slot} missing")
-    return _r(READY, str(cfg.cx_ptt.cx_toml))
+    # Files on disk are not a running daemon. Until 2026-08-19 this returned
+    # READY on the strength of the two checks above, which is why the hub
+    # reported cx-ptt healthy through the whole ~16 hours it was dead: nothing
+    # ever asked whether the process was there. `error` is the state the
+    # contract at the top of this file already reserves for exactly this —
+    # installed but not responding.
+    if beat is None:
+        from ping_hub import cxptt
+        beat = cxptt.heartbeat(cfg)
+    if not beat.get("alive"):
+        return _r(ERROR, beat.get("detail") or "cx-ptt is not running")
+    return _r(READY, f"{cfg.cx_ptt.cx_toml} ({beat['detail']})")
 
 
 def wsl(cfg) -> dict:

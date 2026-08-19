@@ -144,6 +144,87 @@ def test_autostart_is_disabled_by_a_human_not_by_absence():
     assert [n for n, _ in autostart.plan(off)] == [autostart.HUB_TASK]
 
 
+# ── cx-ptt: the last piece of this app a human had to start by hand ─────────
+from test_ping_hub_config import (CX_SLOT_PATH, CX_TOML_PATH,  # noqa: E402
+                                   CX_TOML_TEXT, OPERATOR_HOME)
+
+# built the way the resolver builds it, so the separator matches whichever
+# platform is running the suite
+CXPTT_CMD = str(Path(OPERATOR_HOME) / "Desktop" / "Work-Channel.cmd")
+WITH_LAUNCHER = {CX_TOML_PATH: CX_TOML_TEXT, CX_SLOT_PATH: "# cx-slot",
+                 CXPTT_CMD: "@echo off"}
+
+
+def test_cx_ptt_gets_a_logon_task_like_the_speech_server():
+    cfg = _cfg(files=WITH_LAUNCHER)
+    names = [n for n, _ in autostart.plan(cfg)]
+    assert autostart.CXPTT_TASK in names
+    cmd = dict(autostart.plan(cfg))[autostart.CXPTT_TASK]
+    assert cmd == [CXPTT_CMD]
+
+
+def test_no_launcher_on_disk_means_no_task_at_all():
+    """`cx_ptt.launcher` DERIVES a path whether or not anything is there. A
+    logon task pointing at a missing .cmd fails silently every boot, which
+    looks exactly like the outage this fork exists to end."""
+    cfg = _cfg()                      # cx.toml present, no Work-Channel.cmd
+    assert autostart.CXPTT_TASK not in [n for n, _ in autostart.plan(cfg)]
+
+
+def test_a_human_can_switch_the_cx_ptt_task_off():
+    cfg = _cfg({"cx_ptt": {"autostart": False}}, files=WITH_LAUNCHER)
+    assert autostart.CXPTT_TASK not in [n for n, _ in autostart.plan(cfg)]
+
+
+def test_the_interim_run_key_is_removed_only_after_its_replacement_answers():
+    calls = []
+
+    def run(cmd, **kw):
+        calls.append(cmd)
+        return _Ok()
+    lines = autostart.supersede_interim_run_key(
+        _cfg(files=WITH_LAUNCHER), run=run, platform="win")
+    kinds = [c[0] for c in calls]
+    assert kinds == ["schtasks", "reg", "reg"]      # query, query, delete
+    assert calls[0][1] == "/query" and calls[0][3] == autostart.CXPTT_TASK
+    assert calls[2][:2] == ["reg", "delete"] and "/f" in calls[2]
+    assert any("removed" in l for l in lines)
+
+
+def test_a_task_that_did_not_register_leaves_the_run_key_alone():
+    """Removing the old mechanism first would leave the machine with NEITHER,
+    and the thing they both start is the one that already went missing for
+    sixteen hours."""
+    class Fail:
+        returncode = 1
+        stdout = stderr = ""
+    calls = []
+
+    def run(cmd, **kw):
+        calls.append(cmd)
+        return Fail()
+    lines = autostart.supersede_interim_run_key(
+        _cfg(files=WITH_LAUNCHER), run=run, platform="win")
+    assert [c[0] for c in calls] == ["schtasks"]    # it never reached reg
+    assert any("LEFT IN PLACE" in l for l in lines)
+
+
+def test_nothing_to_supersede_when_there_is_no_cx_ptt_task():
+    calls = []
+    lines = autostart.supersede_interim_run_key(
+        _cfg(), run=lambda *a, **k: calls.append(a) or _Ok(), platform="win")
+    assert calls == []
+    assert any("no ping-chat-hub-cxptt" in l for l in lines)
+
+
+def test_the_run_key_is_a_windows_notion_only():
+    calls = []
+    assert autostart.supersede_interim_run_key(
+        _cfg(files=WITH_LAUNCHER),
+        run=lambda *a, **k: calls.append(a) or _Ok(), platform="mac") == []
+    assert calls == []
+
+
 def test_dry_run_registers_nothing_but_shows_the_command():
     calls = []
     lines = autostart.register(_cfg(), dry_run=True,

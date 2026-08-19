@@ -477,6 +477,17 @@ class CxPttSection(_Section):
         return None if v is None else bool(v)
 
     @property
+    def autostart(self) -> bool:
+        """Register cx-ptt to start at logon, same terms as the STT server.
+
+        On by default because it is the last piece of this app that a human
+        had to start by hand: it died 2026-08-18 20:36 and stayed dead across
+        two WSL boots and a full reboot while every hub-owned service came
+        back by itself.
+        """
+        return bool(self._get("autostart", True))
+
+    @property
     def cx_toml(self) -> Path:
         return Path(self._derived("cx_toml",
                                   lambda: str(self._cfg.paths.base_gbl / "cx.toml")))

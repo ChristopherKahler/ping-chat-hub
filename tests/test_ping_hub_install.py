@@ -188,6 +188,92 @@ def test_rewriting_a_config_keeps_the_old_one(tmp_path):
     assert (tmp_path / "hub.toml.bak").read_text(encoding="utf-8") == "[hub]\nport = 1\n"
 
 
+# ── re-running the installer on a configured machine ─────────────────────────
+# The clobber this replaces was real: `cmd_install` builds four sections, and
+# writing only those deleted every hand-pinned key in every other one.
+PINNED = r"""# ping-chat-hub machine config.
+
+[paths]
+hub_home = "C:\\old\\.ping-hub"
+
+[wsl]
+# Pinned by hand: deriving these failed once already and cost a day.
+distro = "Ubuntu"
+home_linux = "/home/operator"
+
+[terminal]
+windows_profile = "PowerShell"
+"""
+
+
+def test_a_rerun_keeps_every_key_it_was_not_given(tmp_path):
+    p = tmp_path / "hub.toml"
+    p.write_text(PINNED, encoding="utf-8")
+    install.write_hub_toml(p, {"paths": {"hub_home": r"C:\new\.ping-hub"},
+                               "stt": {"model_dir": r"C:\new\model"}},
+                           log=lambda m: None)
+    import tomllib
+    doc = tomllib.loads(p.read_text(encoding="utf-8"))
+    assert doc["wsl"]["distro"] == "Ubuntu"
+    assert doc["wsl"]["home_linux"] == "/home/operator"
+    assert doc["terminal"]["windows_profile"] == "PowerShell"
+
+
+def test_what_provisioning_just_built_wins_over_the_old_value(tmp_path):
+    """The fresher fact: that path was created seconds ago."""
+    p = tmp_path / "hub.toml"
+    p.write_text(PINNED, encoding="utf-8")
+    install.write_hub_toml(p, {"paths": {"hub_home": r"C:\new\.ping-hub"}},
+                           log=lambda m: None)
+    import tomllib
+    assert tomllib.loads(p.read_text(encoding="utf-8"))["paths"]["hub_home"] \
+        == r"C:\new\.ping-hub"
+
+
+def test_the_comments_explaining_a_pin_survive_the_rerun(tmp_path):
+    """A value-perfect rewrite that dropped the reasoning would hand the next
+    operator the same bug with the explanation deleted."""
+    p = tmp_path / "hub.toml"
+    p.write_text(PINNED, encoding="utf-8")
+    install.write_hub_toml(p, {"stt": {"model_dir": "M:/m"}}, log=lambda m: None)
+    assert "deriving these failed once already" in p.read_text(encoding="utf-8")
+
+
+def test_a_section_it_has_never_seen_is_appended(tmp_path):
+    p = tmp_path / "hub.toml"
+    p.write_text(PINNED, encoding="utf-8")
+    install.write_hub_toml(p, {"cx_ptt": {"autostart": True}}, log=lambda m: None)
+    import tomllib
+    assert tomllib.loads(p.read_text(encoding="utf-8"))["cx_ptt"]["autostart"] is True
+
+
+def test_a_new_key_lands_inside_its_existing_section(tmp_path):
+    p = tmp_path / "hub.toml"
+    p.write_text(PINNED, encoding="utf-8")
+    install.write_hub_toml(p, {"wsl": {"bridge_port": 7798}}, log=lambda m: None)
+    import tomllib
+    doc = tomllib.loads(p.read_text(encoding="utf-8"))
+    assert doc["wsl"]["bridge_port"] == 7798
+    assert doc["wsl"]["distro"] == "Ubuntu"      # its neighbours are untouched
+
+
+def test_a_config_that_does_not_parse_is_refused_not_replaced(tmp_path):
+    """Merging into a broken file would bury the fact that it is broken."""
+    p = tmp_path / "hub.toml"
+    p.write_text("[wsl\ndistro = ", encoding="utf-8")
+    with pytest.raises(install.InstallError, match="not valid TOML"):
+        install.write_hub_toml(p, {"stt": {"model_dir": "M:/m"}}, log=lambda m: None)
+    assert p.read_text(encoding="utf-8") == "[wsl\ndistro = "
+
+
+def test_a_first_install_still_writes_a_clean_file(tmp_path):
+    p = tmp_path / "hub.toml"
+    install.write_hub_toml(p, {"paths": {"hub_home": "H:/h"}}, log=lambda m: None)
+    text = p.read_text(encoding="utf-8")
+    assert text.startswith("# ping-chat-hub machine config")
+    assert "[paths]" in text
+
+
 def test_launcher_carries_the_model_path_with_it(tmp_path):
     """hub.toml points at the launcher; the launcher knows where the model is.
     One thing to configure, not two that can disagree."""

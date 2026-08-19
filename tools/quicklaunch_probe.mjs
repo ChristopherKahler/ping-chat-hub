@@ -108,8 +108,11 @@ try {
     document.getElementById("spawn").click();
     await new Promise(r => setTimeout(r, 1800));
     const pop = document.getElementById("pop");
-    const btns = [...pop.querySelectorAll(".qlbtn")].map(b => b.textContent.trim());
-    R.buttons = btns;
+    // the card carries a name AND the payload summary, so read the name node
+    // rather than the whole card's text
+    const cards = [...pop.querySelectorAll(".qlbtn")];
+    R.buttons = cards.map(b => (b.querySelector(".qlnm b") || b).textContent.trim());
+    R.metas = cards.map(b => (b.querySelector(".qlmeta") || {}).textContent || "");
     // 4. one tap = one POST /api/spawn with exactly that payload, no dialog
     let sent = null;
     const real = window.fetch;
@@ -135,7 +138,9 @@ try {
   check(out.persisted.includes(NAME), "the preset survived a full page reload (server-stored)");
   check(out.cardOrderKept === '["win:sentinel"]',
         "saving settings no longer wipes keys it has no widget for");
-  check(out.buttons.includes(NAME), "it renders as a one-tap button in the launcher");
+  check(out.buttons.includes(NAME), "it renders as a one-tap card in the launcher");
+  check((out.metas || []).some(m => m.includes("WSL")),
+        "the card says what it will boot, not just its name");
   check(!!out.sent, "tapping it POSTs to /api/spawn");
   check(out.sent && out.sent.side === "wsl" && out.sent.gated === true &&
         out.sent.cwd === "/home/operator/work" &&

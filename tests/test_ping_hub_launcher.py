@@ -133,8 +133,15 @@ def test_the_dialog_sends_both_and_remembers_them():
 
 def test_the_dialog_offers_an_explicit_settings_default_option():
     """Not a blank first entry -- an option that says what it does, so
-    choosing it is visible rather than looking like an unset control."""
+    choosing it is visible rather than looking like an unset control.
+
+    Which field it belongs to now comes from the label above the control
+    rather than from the option text, so the option no longer has to repeat
+    it -- at 390px "model — settings d ⌄" was all that fit, which is how the
+    launcher ended up unreadable.
+    """
     from pathlib import Path
     html = Path(daemon.HTML).read_text(encoding="utf-8")
-    assert 'model — settings default' in html
-    assert 'effort — settings default' in html
+    assert html.count('<option value="">settings default</option>') == 2
+    assert '<span class="splab">model</span>' in html
+    assert '<span class="splab">effort</span>' in html

@@ -194,15 +194,81 @@
      inset so it covers #pop's own 12px padding as content scrolls under it —
      a close button that scrolls away is not a close button. */
   #pop .popbar { position: sticky; top: -12px; z-index: 1; display: flex;
-                 justify-content: flex-end; background: var(--panel2);
-                 margin: -12px -12px 4px; padding: 6px 8px 4px; }
+                 align-items: center; justify-content: space-between;
+                 background: var(--panel2); border-bottom: 1px solid var(--line);
+                 margin: -12px -12px 8px; padding: 4px 8px 4px 12px; }
+  #pop .popbar .title { margin: 0; font-size: 16px; }
   #pop .popbar button { min-width: 44px; min-height: 44px; padding: 0;
                         font-size: 17px; line-height: 1; }
   /* quick launch: presets sit at the TOP of the launcher, before the form,
-     because the whole point is not filling the form in */
-  #pop .qlab { flex: 1 0 100%; font-size: 12px; color: var(--dim); margin-bottom: 2px; }
-  #pop .qlbtn { border-color: var(--accent2); color: var(--accent); }
-  #pop .qlbtn:disabled { opacity: 0.5; }
+     because the whole point is not filling the form in.
+
+     They are styled as ACTIONS, deliberately unlike the side toggle directly
+     beneath them. Both were `#pop button` with an accent border, so a preset
+     (one tap = a terminal boots) and a radio selection read as the same
+     object. A preset gets a filled card, an accent spine, and the payload it
+     will actually launch printed under its name — a chip saying only
+     "Extendly" tells you nothing about what is about to boot. */
+  #pop .qlab { flex: 1 0 100%; display: flex; align-items: center; gap: 8px;
+               font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+               color: var(--dim); margin: 2px 0 6px; }
+  #pop .qlab::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+  #pop .qlgrid { flex: 1 0 100%; display: grid; gap: 8px;
+                 grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); }
+  #pop .qlbtn { display: flex; flex-direction: column; align-items: stretch;
+                gap: 3px; text-align: left; padding: 9px 11px; min-width: 0;
+                background: var(--panel2); border: 1px solid var(--accent2);
+                border-left: 3px solid var(--accent); border-radius: 10px;
+                color: var(--text); font-size: 14px; line-height: 1.25; }
+  #pop .qlbtn:hover { background: var(--in); border-color: var(--accent);
+                      border-left-color: var(--accent); color: var(--text); }
+  #pop .qlbtn:active { transform: translateY(1px); }
+  #pop .qlbtn .qlnm { display: flex; align-items: baseline; gap: 6px;
+                      min-width: 0; font-weight: 600; }
+  #pop .qlbtn .qlnm b { flex: 1; min-width: 0; font-weight: 600;
+                        overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #pop .qlbtn .qlgo { color: var(--accent); font-size: 12px; }
+  #pop .qlbtn .qlmeta { font-size: 11px; color: var(--dim); min-width: 0;
+                        overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* a tap has to be acknowledged on a phone: the card says what it is doing
+     rather than fading out and looking broken */
+  #pop .qlbtn:disabled { cursor: default; border-color: var(--line);
+                         border-left-color: var(--dim); background: var(--panel); }
+  #pop .qlbtn:disabled .qlnm b, #pop .qlbtn:disabled .qlmeta { color: var(--dim); }
+  /* ── the launcher, laid out as a form ─────────────────────────────────
+     This is the one surface Chris fills in from a phone, and it was twelve
+     sibling rows of identical weight with no labels: the only clue what a
+     control was, was its own truncated value ("model — settings d ⌄"). Three
+     changes carry the fix. Quick launch is walled off from the form it exists
+     to avoid — it was touching the side toggle, which read as one control
+     group. Every field carries a label. And related fields group with tighter
+     spacing than unrelated ones, so the eye gets a structure instead of a
+     list. (Chris, 2026-08-19: "ugly and cluttery and hard to fucking fill".) */
+  #pop .qlbox { background: var(--panel); border: 1px solid var(--line);
+                border-radius: 12px; padding: 10px; }
+  #pop .spsec { display: flex; align-items: center; gap: 8px;
+                margin: 20px 0 2px; font-size: 11px; letter-spacing: 0.08em;
+                text-transform: uppercase; color: var(--dim); }
+  #pop .spsec::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+  #pop .spg { margin-top: 12px; }
+  #pop .spg .splab { display: block; font-size: 11px; letter-spacing: 0.06em;
+                     text-transform: uppercase; color: var(--dim);
+                     margin-bottom: 5px; }
+  #pop .spg .row.spr { margin-top: 0; }
+  #pop .sptwo { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  #pop .sptwo .spsel { max-width: 100%; }
+  /* one control, not two buttons that happen to be adjacent */
+  #pop .seg { display: flex; }
+  #pop .seg button { flex: 1; border-radius: 0; margin-left: -1px; }
+  #pop .seg button:first-child { border-radius: 8px 0 0 8px; margin-left: 0; }
+  #pop .seg button:last-child { border-radius: 0 8px 8px 0; }
+  #pop .seg button.on { background: var(--in); border-color: var(--accent);
+                        position: relative; z-index: 1; }
+  /* the explanation moves OUT of the label: a four-line paragraph wired to a
+     checkbox made a rarely-used option the heaviest thing on the sheet */
+  #pop .sphint { font-size: 11px; color: var(--dim); line-height: 1.35;
+                 margin: 3px 0 0 26px; }
+  #pop .spchk { min-height: 28px; }
   #pop .spawnerr { color: var(--accent); border: 1px solid var(--accent2);
                    border-radius: 6px; padding: 6px 8px; margin: 4px 0; }
   #modal .qlrow { display: flex; align-items: center; gap: 8px; margin: 6px 0;
@@ -437,6 +503,10 @@
                          padding: 8px 12px calc(8px + env(safe-area-inset-bottom)); }
     #pop.sheet .spsel { max-width: 100%; }
     #pop button { min-height: 44px; }
+    /* every control the same height: the toggle was 44px next to 33px selects,
+       which is what made the stack look thrown together */
+    #pop .spsel { min-height: 44px; }
+    #pop .seg button { padding: 0 12px; }
     /* TWO LINES on the phone: the input owns row one, the four controls share
        row two. The old single-row "thirds" plan budgeted for four children and
        the row has FIVE — #cmdb was never given an order — so two fixed buttons
@@ -531,6 +601,11 @@ function showPop(x, y, html) {
   // viewport, so tap-outside had no outside and Esc had no key. Chris could
   // open the launcher and not get rid of it.
   p.innerHTML = `<div class="popbar"><button id="popclose" title="close">✕</button></div>` + html;
+  // the caller's title belongs IN that bar, not under it. A 44px close button
+  // alone on the first row costs ~50px of a phone sheet and reads as dead
+  // space above the content, which is exactly what it looked like.
+  const ttl = p.querySelector(":scope > .title");
+  if (ttl) p.querySelector(".popbar").prepend(ttl);
   document.body.appendChild(p);
   if (onPhone()) {
     // a sheet, and CSS owns its geometry. The inline left/top below is exactly
@@ -572,6 +647,10 @@ async function loadRoster() {
   // a SIBLING request, not a field on the roster: bridge-down has to be
   // answerable when the roster is EMPTY, which is exactly when it matters
   try { bridgeState = await (await fetch("/api/bridge")).json(); } catch (e) { /* hub restarting */ }
+  // cx-ptt is the hotkeys, the sounds and the desktop mic. When it dies none
+  // of those work and nothing on this page changed, which is how it stayed
+  // dead for sixteen hours on 2026-08-18.
+  try { cxpttState = await (await fetch("/api/cxptt")).json(); } catch (e) { /* hub restarting */ }
   if (spawnWatch) {
     // A wsl spawn is confirmed by the ROSTER, and the roster for that side
     // arrives only through the bridge. While the bridge is down that
@@ -758,6 +837,15 @@ function renderList() {
     w.innerHTML = `<div class="name">WSL bridge down<span class="badge escb">wsl</span></div>
       <div class="meta">no window onto WSL sessions${since} — they may be running unseen</div>
       <div class="meta">${bridgeState.detail || ""}</div>`;
+    list.appendChild(w);
+  }
+  if (tab === "term" && cxpttState.enabled && cxpttState.probed && !cxpttState.alive) {
+    const w = document.createElement("div");
+    w.className = "th down";
+    const since = cxpttState.since ? " since " + cxpttState.since.replace("T", " ") : "";
+    w.innerHTML = `<div class="name">cx-ptt down<span class="badge escb">hotkeys</span></div>
+      <div class="meta">no channel hotkeys, no desktop mic, no sounds${since} — the hub is restarting it</div>
+      <div class="meta">${(cxpttState.detail || "").replace(/</g, "&lt;")}</div>`;
     list.appendChild(w);
   }
   if (spawnWatch && tab === "term") {
@@ -1125,6 +1213,7 @@ let wsCache = null, spawnWatch = null;
 // up:true until proven otherwise, so a slow first fetch never flashes a false
 // alarm; enabled:false keeps the banner off machines that have no WSL at all
 let bridgeState = { up: true, probed: false, enabled: false, since: "", detail: "" };
+let cxpttState = { alive: true, probed: false, enabled: false, since: "", detail: "" };
 let spawnMeta = {};   // per-(side|workspace) launcher dropdown cache
 
 // ── quick launch ──────────────────────────────────────────────────────────
@@ -1135,6 +1224,21 @@ let spawnMeta = {};   // per-(side|workspace) launcher dropdown cache
 const qlAll = () => (hubCfg.quick_launch || []);
 const qlSave = () => fetch("/api/settings", { method: "POST",
   headers: {"Content-Type": "application/json"}, body: JSON.stringify(hubCfg) });
+
+// What a preset will actually boot, in one line. A chip carrying only its
+// name ("Extendly") hides the whole decision behind it — side, workspace and
+// model are the three that change what you get, so they ride on the card.
+function qlMeta(payload) {
+  const q = payload || {};
+  const base = (q.cwd || "").replace(/[\\/]+$/, "").split(/[\\/]/).pop();
+  const bits = [
+    q.side === "wsl" ? "WSL" : "Windows",
+    q.project || base || "home",
+    q.model ? q.model + (q.effort ? "·" + q.effort : "") : "",
+    q.gated ? "gated" : "",
+  ];
+  return bits.filter(Boolean).join(" · ");
+}
 
 // blank keys are DROPPED rather than sent empty: /api/spawn derives its own
 // defaults, and "" is not the same thing to it as absent
@@ -1253,30 +1357,53 @@ document.getElementById("spawn").onclick = async ev => {
   let side = saved.side === "wsl" ? "wsl" : "win";
   const p = showPop(ev.clientX, ev.clientY,
     `<div class="title">new session</div>
-     <div class="row" id="sp-quick"></div>
-     <div class="row" id="sp-sides">
-       <button data-side="win" class="on">Windows</button>
-       <button data-side="wsl">WSL</button>
+     <div class="qlbox"><div class="row" id="sp-quick"></div></div>
+
+     <div class="spsec">or set one up</div>
+     <div class="spg"><span class="splab">side</span>
+       <div class="row seg" id="sp-sides">
+         <button data-side="win" class="on">Windows</button>
+         <button data-side="wsl">WSL</button>
+       </div></div>
+     <div class="spg"><span class="splab">workspace</span>
+       <div class="row spr"><select id="sp-ws" class="spsel" title="workspace"></select></div></div>
+     <div class="spg sptwo">
+       <div><span class="splab">model</span>
+         <select id="sp-model" class="spsel" title="model for this session">
+           <option value="">settings default</option>
+           <option>fable</option><option>opus</option><option>sonnet</option></select></div>
+       <div><span class="splab">effort</span>
+         <select id="sp-effort" class="spsel" title="effort for this session">
+           <option value="">settings default</option>
+           <option>low</option><option>medium</option><option>high</option>
+           <option>xhigh</option><option>max</option></select></div>
      </div>
-     <div class="row spr"><select id="sp-ws" class="spsel" title="workspace"></select></div>
-     <div class="row spr"><select id="sp-parent" class="spsel" title="parent to report to"></select></div>
-     <div class="row spr"><select id="sp-model" class="spsel" title="model for this session">
-       <option value="">model — settings default</option>
-       <option>fable</option><option>opus</option><option>sonnet</option></select>
-       <select id="sp-effort" class="spsel" title="effort for this session">
-       <option value="">effort — settings default</option>
-       <option>low</option><option>medium</option><option>high</option>
-       <option>xhigh</option><option>max</option></select></div>
-     <div class="row spr"><label class="spchk"><input type="checkbox" id="sp-boot-ping" checked>
-       auto report to parent on boot (uncheck when a ping is already inbound for it)</label></div>
-     <div class="row spr"><label class="spchk"><input type="checkbox" id="sp-gated">
-       <b>gated build</b> — parent becomes the orchestrator (required), child boots per
-       PROCESS-gated-build.md with a pinned builder codename, parent is pinged instantly</label></div>
-     <div class="row spr"><input id="sp-pf" class="spsel flt" placeholder="filter projects…"><select id="sp-proj" class="spsel"></select></div>
-     <div class="row spr"><input id="sp-hf" class="spsel flt" placeholder="filter handoffs…"><select id="sp-hand" class="spsel" multiple size="4" title="ctrl/tap-select several — each becomes a HANDOFF line"></select></div>
-     <div class="row spr"><input id="sp-ff" class="spsel flt" placeholder="filter forks…"><select id="sp-fork" class="spsel" multiple size="4" title="ctrl/tap-select several — each becomes a FORK line"></select></div>
-     <div class="row spr"><textarea id="sp-prompt" class="spsel" rows="5"
-       placeholder="initial prompt (optional — apostrophes and any punctuation are safe)"></textarea><button id="sp-mic" class="spmic" title="dictate into the prompt">🎤</button></div>
+
+     <div class="spsec">reporting</div>
+     <div class="spg"><span class="splab">reports to</span>
+       <div class="row spr"><select id="sp-parent" class="spsel" title="parent to report to"></select></div></div>
+     <div class="spg">
+       <label class="spchk"><input type="checkbox" id="sp-boot-ping" checked>
+         auto report on boot</label>
+       <div class="sphint">uncheck when a ping is already inbound for it</div>
+     </div>
+     <div class="spg">
+       <label class="spchk"><input type="checkbox" id="sp-gated"><b>gated build</b></label>
+       <div class="sphint">parent becomes the orchestrator (required); the child boots
+         per PROCESS-gated-build.md with a pinned builder codename and pings it instantly</div>
+     </div>
+
+     <div class="spsec">briefing</div>
+     <div class="spg"><span class="splab">project</span>
+       <div class="row spr"><input id="sp-pf" class="spsel flt" placeholder="filter…"><select id="sp-proj" class="spsel"></select></div></div>
+     <div class="spg"><span class="splab">handoffs — tap several</span>
+       <div class="row spr"><input id="sp-hf" class="spsel flt" placeholder="filter…"><select id="sp-hand" class="spsel" multiple size="3" title="ctrl/tap-select several — each becomes a HANDOFF line"></select></div></div>
+     <div class="spg"><span class="splab">forks — tap several</span>
+       <div class="row spr"><input id="sp-ff" class="spsel flt" placeholder="filter…"><select id="sp-fork" class="spsel" multiple size="3" title="ctrl/tap-select several — each becomes a FORK line"></select></div></div>
+     <div class="spg"><span class="splab">prompt — optional</span>
+       <div class="row spr"><textarea id="sp-prompt" class="spsel" rows="4"
+         placeholder="anything you would type first"></textarea><button id="sp-mic" class="spmic" title="dictate into the prompt">🎤</button></div></div>
+
      <div class="row spr popact"><button id="sp-launch" style="flex:1">Launch</button><button id="sp-clear" title="reset the form">Clear</button>
        <button id="sp-save-preset" title="save this form as a one-tap quick launch preset">Save preset</button></div>
      <div class="hint">bypass permissions, folder pre-trusted — zero prompts · project / parent / handoff / fork become the boot briefing · the new thread appears and selects itself here</div>`);
@@ -1349,13 +1476,31 @@ document.getElementById("spawn").onclick = async ev => {
   const drawQuick = () => {
     const row = p.querySelector("#sp-quick");
     const presets = qlAll();
-    row.innerHTML = presets.length
-      ? `<div class="qlab">quick launch</div>` + presets.map((q, i) =>
-          `<button class="qlbtn" data-i="${i}">${(q.name || "preset").replace(/</g, "&lt;")}</button>`).join("")
-      : `<div class="qlab">quick launch — add one in settings, or fill this form and press Save preset</div>`;
+    const esc = t => (t || "").replace(/</g, "&lt;");
+    row.innerHTML = `<div class="qlab">quick launch</div>` + (presets.length
+      ? `<div class="qlgrid">` + presets.map((q, i) =>
+          `<button class="qlbtn" data-i="${i}" title="boot this now">
+             <span class="qlnm"><b>${esc(q.name) || "preset"}</b><span class="qlgo">&#9656;</span></span>
+             <span class="qlmeta">${esc(qlMeta(q.payload))}</span>
+           </button>`).join("") + `</div>`
+      : `<div class="hint" style="margin:0">nothing saved yet — add one in settings, or
+           fill this form and press Save preset</div>`);
     row.querySelectorAll(".qlbtn").forEach(b => b.onclick = async () => {
+      // the tap is acknowledged on the card itself: a phone gives no other
+      // feedback that a terminal is being opened on the other machine
       b.disabled = true;
-      await doSpawn(qlClean(presets[+b.dataset.i].payload || {}));
+      const nm = b.querySelector(".qlnm b"), meta = b.querySelector(".qlmeta");
+      const was = meta.textContent;
+      b.querySelector(".qlgo").textContent = "";
+      meta.textContent = "launching…";
+      try {
+        await doSpawn(qlClean(presets[+b.dataset.i].payload || {}));
+      } finally {
+        // doSpawn may leave the sheet open on failure; put the card back so it
+        // is obvious the preset can be tapped again
+        if (b.isConnected && !b.disabled) { meta.textContent = was;
+          b.querySelector(".qlgo").innerHTML = "&#9656;"; }
+      }
     });
   };
   drawQuick();
