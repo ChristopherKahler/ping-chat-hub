@@ -273,6 +273,17 @@ class WslSection(_Section):
         return int(self._get("bridge_port", BRIDGE_PORT))
 
     @property
+    def bridge_python(self) -> str:
+        """Absolute interpreter for the systemd unit's ExecStart.
+
+        A static default rather than a probe: this is only a fallback. The
+        installer asks WSL for the real path while it is already talking to it
+        (autostart.bridge_python) and writes THAT into the unit. Resolving it
+        here would make every config read shell out to wsl.exe.
+        """
+        return str(self._get("bridge_python", "/usr/bin/python3"))
+
+    @property
     def bridge_deploy(self) -> str:
         """Linux-side dir the bridge and spawn scripts are written to, relative
         to the WSL home. An absolute value is honoured as-is."""

@@ -63,6 +63,42 @@ def _read_json(path: Path) -> Any:
         return None
 
 
+class _HealBudget:
+    """How often the hub may try to restart a bridge it has found down.
+
+    Pure decision logic, kept apart from the shelling out so the budget is
+    provable without a machine. A restart loop that fires every five seconds is
+    worse than no restart loop at all: it buries the real failure under a wall
+    of identical log lines and keeps a sick WSL busy. The first attempt is free
+    — a bridge that has just died may only need a nudge — and the interval then
+    widens and holds, so a bridge that is never coming back costs one line
+    every five minutes.
+    """
+
+    STEPS = (30, 60, 120, 300)
+
+    def __init__(self) -> None:
+        self.n = 0
+        self.last = 0.0
+
+    def wait(self) -> int:
+        """Seconds that must pass before the next attempt is allowed."""
+        if self.n == 0:
+            return 0
+        return self.STEPS[min(self.n - 1, len(self.STEPS) - 1)]
+
+    def due(self, now: float) -> bool:
+        return (now - self.last) >= self.wait()
+
+    def mark(self, now: float) -> None:
+        self.last = now
+        self.n += 1
+
+    def reset(self) -> None:
+        self.n = 0
+        self.last = 0.0
+
+
 class Engine:
     def __init__(self, side: str = "win") -> None:
         self.side = side
@@ -77,6 +113,18 @@ class Engine:
         self._rel_cache: list = [0.0, {}]        # relations.json mtime cache
         self._idx_cache: dict[str, tuple] = {}   # index path -> (mtime, {sid: summary})
         self._stop = threading.Event()
+        # bridge liveness as a TOP-LEVEL fact, not only the per-thread flag: a
+        # hub that starts while the bridge is already down has no wsl threads
+        # to stamp, and an empty list must never read as "no sessions over
+        # there". Absent is not empty.
+        # `probed` is the difference between "down" and "not asked yet", and
+        # they are not the same fact. Without it the hub announces an outage
+        # for the first few seconds of every boot, which is the exact species
+        # of lie this fork exists to remove.
+        self.bridge_state: dict = {"up": False, "probed": False, "since": "",
+                                   "detail": "not probed yet",
+                                   "enabled": bool(CFG.wsl.enabled)}
+        self._heal = _HealBudget()
         # "side:title" -> every project that EVER touched the session (Chris
         # spec 2026-08-17: append on change, never remove — filter keywords)
         self._projects: dict[str, list] = _read_json(HUB_DIR / "projects.json") or {}
@@ -798,6 +846,46 @@ class Engine:
         except (OSError, subprocess.TimeoutExpired):
             return ""
 
+    def _bridge_mark(self, up: bool, detail: str = "") -> None:
+        """Record bridge liveness. `since` moves only on a CHANGE of state, so
+        the UI can say how long it has been down rather than how long ago the
+        last poll was."""
+        with self.lock:
+            if self.bridge_state.get("up") is not up:
+                self.bridge_state["since"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+            self.bridge_state.update(up=up, detail=detail, probed=True,
+                                     enabled=bool(CFG.wsl.enabled))
+
+    def _bridge_heal(self) -> None:
+        """Try to bring the bridge back from this side.
+
+        The systemd unit is the primary mechanism; this is the backstop for the
+        one case the unit cannot cover — WSL itself was not running when the
+        bridge died, so nothing inside it was alive to restart anything. Every
+        failure here is expected and none of them may kill the loop: a hub that
+        falls over because WSL is down is worse than a hub with no WSL side.
+        """
+        import subprocess
+
+        from ping_hub import autostart
+        if not CFG.wsl.enabled or not CFG.wsl.distro:
+            return
+        unit = f"systemctl --user restart {autostart.BRIDGE_UNIT}"
+        try:
+            r = proc.run(autostart.wsl_sh(unit), capture_output=True,
+                         text=True, timeout=30)
+            if r.returncode == 0:
+                print(f"bridge down: ran `{unit}` in {CFG.wsl.distro}")
+                return
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        # no systemd, or the unit was never installed. NOT a backgrounded shell
+        # job: WSL kills those when the interop session exits, silently
+        if autostart.start_bridge_detached(CFG):
+            print(f"bridge down: started it directly in {CFG.wsl.distro}")
+            return
+        print(f"bridge down: could not restart it in {CFG.wsl.distro}")
+
     def _bridge_loop(self) -> None:
         import urllib.request
         cursor = 0
@@ -815,26 +903,35 @@ class Engine:
                     ) as r:
                         self._bridge_roster(json.loads(r.read()))
                     primed = True
+                    self._bridge_mark(True, f"{host}:{BRIDGE_PORT}")
+                    self._heal.reset()
                 with urllib.request.urlopen(
                     f"http://{host}:{BRIDGE_PORT}/events?cursor={cursor}", timeout=35
                 ) as r:
                     body = json.loads(r.read())
                 cursor = body.get("cursor", cursor)
+                self._bridge_mark(True, f"{host}:{BRIDGE_PORT}")
+                self._heal.reset()
                 for ev in body.get("events", []):
                     if ev["kind"] == "roster":
                         self._bridge_roster(ev)
                     elif ev["kind"] == "ping":
                         self._bridge_ping(ev.get("inbox", "?"), ev.get("ping") or {})
-            except OSError:
+            except OSError as e:
                 # WSL down or bridge not running: gray the wsl threads, retry.
                 primed = False
                 host = ""
+                self._bridge_mark(False, str(e)[:160])
                 with self.lock:
                     for key, t in self.threads.items():
                         if key.startswith("wsl:"):
                             t["watching"] = False
                             t["bridge_down"] = True
                 self._emit({"event": "roster", "side": "wsl"})
+                now = time.time()
+                if self._heal.due(now):
+                    self._heal.mark(now)
+                    self._bridge_heal()
                 if self._stop.wait(5):
                     return
 

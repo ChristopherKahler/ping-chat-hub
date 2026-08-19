@@ -68,6 +68,8 @@
   .th:hover { background: var(--panel2); }
   .th.sel { background: var(--panel2); border-left: 3px solid var(--accent); }
   .th.gray { opacity: 0.45; }
+  /* a fault, not a quiet session: never gray, which reads as "nothing wrong" */
+  .th.down { opacity: 1; background: var(--panel2); border-left: 3px solid var(--accent); }
   .th .name { font-weight: 600; font-size: 16px; }
   .th .name .badge, #hinfo .hname .badge { margin-left: 12px; }
   .th .edit { color: var(--dim); font-size: 13px; margin-left: 8px;
@@ -500,43 +502,56 @@ function popEsc(e) { if (e.key === "Escape") closePop(); }
 
 async function loadRoster() {
   roster = await (await fetch("/api/threads")).json();
+  // a SIBLING request, not a field on the roster: bridge-down has to be
+  // answerable when the roster is EMPTY, which is exactly when it matters
+  try { bridgeState = await (await fetch("/api/bridge")).json(); } catch (e) { /* hub restarting */ }
   if (spawnWatch) {
-    if (Date.now() > spawnWatch.until) spawnWatch = null;
-    else {
-      const norm = s => (s || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-      // a fresh session may RECLAIM a dead codename already on the board, so
-      // "new title" alone misses it — a session-id change on a known title
-      // counts as our spawn too (ocelot lesson)
-      const isNew = x => {
-        const k = x.side + ":" + x.title;
-        return !(k in spawnWatch.sids) ||
-               (x.session_id && x.session_id !== spawnWatch.sids[k]);
-      };
-      const t = spawnWatch.expectTitle
-        ? roster.find(x => x.side === spawnWatch.side &&
-            x.title === spawnWatch.expectTitle &&
-            x.session_id && x.session_id !== spawnWatch.prevSid)
-        : roster.find(x => x.side === spawnWatch.side && isNew(x) &&
-            (!x.cwd || norm(x.cwd) === norm(spawnWatch.cwd)));
-      if (t) {
-        if (spawnWatch.parent) fetch("/api/relation", { method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({ child: t.side + ":" + t.title,
-            parent: t.side + ":" + spawnWatch.parent }) });
-        spawnWatch = null;
-        sel = t.title; selSide = t.side;
-        // app-booted sessions keep a permanent card (survives hide-inactive
-        // and gone-filtering) until Chris hides it himself
-        const k = t.side + ":" + t.title;
-        if (!(hubCfg.spawn_pinned || []).includes(k)) {
-          hubCfg.spawn_pinned = [...(hubCfg.spawn_pinned || []), k];
-          fetch("/api/settings", { method: "POST",
-            headers: {"Content-Type": "application/json"}, body: JSON.stringify(hubCfg) });
-        }
-        loadThread();
-        fetch("/api/focus", { method: "POST", headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({ title: t.title, side: t.side }) });
+    // A wsl spawn is confirmed by the ROSTER, and the roster for that side
+    // arrives only through the bridge. While the bridge is down that
+    // confirmation channel is dead, so the deadline proves nothing — expiring
+    // the card would hide a session that is very probably running, which is
+    // exactly the failure this replaced (2026-08-19). Hold it, and give it a
+    // fresh window once the bridge is back.
+    const blind = spawnWatch.side === "wsl" && bridgeState.enabled &&
+                  bridgeState.probed && !bridgeState.up;
+    if (blind) { spawnWatch.state = "waiting"; spawnWatch.until = Date.now() + 180000; }
+    // NOT null. A spawn that never appeared is a fact Chris has to see;
+    // nulling it here is what made a booting card evaporate in silence.
+    else if (Date.now() > spawnWatch.until) spawnWatch.state = "failed";
+    else spawnWatch.state = "";
+    const norm = s => (s || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+    // a fresh session may RECLAIM a dead codename already on the board, so
+    // "new title" alone misses it — a session-id change on a known title
+    // counts as our spawn too (ocelot lesson)
+    const isNew = x => {
+      const k = x.side + ":" + x.title;
+      return !(k in spawnWatch.sids) ||
+             (x.session_id && x.session_id !== spawnWatch.sids[k]);
+    };
+    const t = spawnWatch.expectTitle
+      ? roster.find(x => x.side === spawnWatch.side &&
+          x.title === spawnWatch.expectTitle &&
+          x.session_id && x.session_id !== spawnWatch.prevSid)
+      : roster.find(x => x.side === spawnWatch.side && isNew(x) &&
+          (!x.cwd || norm(x.cwd) === norm(spawnWatch.cwd)));
+    if (t) {
+      if (spawnWatch.parent) fetch("/api/relation", { method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ child: t.side + ":" + t.title,
+          parent: t.side + ":" + spawnWatch.parent }) });
+      spawnWatch = null;
+      sel = t.title; selSide = t.side;
+      // app-booted sessions keep a permanent card (survives hide-inactive
+      // and gone-filtering) until Chris hides it himself
+      const k = t.side + ":" + t.title;
+      if (!(hubCfg.spawn_pinned || []).includes(k)) {
+        hubCfg.spawn_pinned = [...(hubCfg.spawn_pinned || []), k];
+        fetch("/api/settings", { method: "POST",
+          headers: {"Content-Type": "application/json"}, body: JSON.stringify(hubCfg) });
       }
+      loadThread();
+      fetch("/api/focus", { method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ title: t.title, side: t.side }) });
     }
   }
   renderList();
@@ -666,12 +681,37 @@ function renderList() {
   lastRendered = items.map(t => t.side + ":" + t.title);
   if (tab === "term") items = groupByParent(items);
   list.innerHTML = "";
+  // the bridge being down is a TOP-LEVEL fact — it is reported even when no
+  // wsl card exists to carry the flag, which is the state a hub started during
+  // an outage is in. An empty WSL side must never read as "no sessions".
+  if (tab === "term" && bridgeState.enabled && bridgeState.probed && !bridgeState.up) {
+    const w = document.createElement("div");
+    w.className = "th down";
+    const since = bridgeState.since ? " since " + bridgeState.since.replace("T", " ") : "";
+    w.innerHTML = `<div class="name">WSL bridge down<span class="badge escb">wsl</span></div>
+      <div class="meta">no window onto WSL sessions${since} — they may be running unseen</div>
+      <div class="meta">${bridgeState.detail || ""}</div>`;
+    list.appendChild(w);
+  }
   if (spawnWatch && tab === "term") {
     const b = document.createElement("div");
-    b.className = "th gray";
-    b.innerHTML = `<div class="name">booting… <span class="badge">${spawnWatch.side}</span></div>
-      <div class="meta">${spawnWatch.cwd}</div>`;
+    const st = spawnWatch.state || "";
+    // waiting and failed are DIFFERENT facts and never collapse: one says the
+    // channel that would confirm this is dead, the other says the channel was
+    // alive and nothing showed up. Neither is allowed to disappear on its own.
+    b.className = st ? "th down" : "th gray";
+    const head = st === "waiting" ? "waiting on bridge…"
+               : st === "failed" ? "spawn unconfirmed" : "booting…";
+    const why = st === "waiting"
+      ? "the terminal may already be running — the hub cannot see WSL until the bridge is back"
+      : st === "failed" ? "no session appeared within 3 min" : "";
+    b.innerHTML = `<div class="name">${head} <span class="badge">${spawnWatch.side}</span>` +
+      (st ? `<span class="edit" id="spawndismiss">dismiss</span>` : "") + `</div>
+      <div class="meta">${spawnWatch.cwd}</div>` + (why ? `<div class="meta">${why}</div>` : "");
     list.appendChild(b);
+    const d = b.querySelector("#spawndismiss");
+    // dismissal is CHRIS'S call, never a timer's — that is the whole fix
+    if (d) d.onclick = ev => { ev.stopPropagation(); spawnWatch = null; renderList(); };
   }
   for (const t of items) {
     if (tab === "term" && t._child && accCollapsed(t._under)) continue;
@@ -1015,6 +1055,9 @@ async function dropCard(targetKey) {
     headers: {"Content-Type": "application/json"}, body: JSON.stringify(hubCfg) });
 }
 let wsCache = null, spawnWatch = null;
+// up:true until proven otherwise, so a slow first fetch never flashes a false
+// alarm; enabled:false keeps the banner off machines that have no WSL at all
+let bridgeState = { up: true, probed: false, enabled: false, since: "", detail: "" };
 let spawnMeta = {};   // per-(side|workspace) launcher dropdown cache
 document.getElementById("spawn").onclick = async ev => {
   if (!wsCache) wsCache = await (await fetch("/api/workspaces")).json();

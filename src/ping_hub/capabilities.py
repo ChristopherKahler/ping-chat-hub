@@ -92,6 +92,47 @@ def wsl(cfg) -> dict:
     return _r(READY, f"{cfg.wsl.distro} at {cfg.wsl.home_linux}")
 
 
+def _wsl_ip(cfg) -> str:
+    """WSL's eth0 address — the same authority the engine's bridge client
+    uses (`wsl hostname -I`), because this machine's localhost relay does not
+    forward the WSL port and the NAT address changes every WSL boot."""
+    import subprocess
+
+    from ping_hub import proc
+    try:
+        r = proc.run(["wsl", "hostname", "-I"], capture_output=True,
+                     text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    out = (r.stdout or "").replace("\x00", "").strip()
+    return out.split()[0] if out else ""
+
+
+def bridge(cfg, reach=_reachable, wsl_ip=_wsl_ip) -> dict:
+    """Is the WSL bridge answering?
+
+    Same ordering rule this file has now learned four times over (wsl, cx_ptt,
+    cx_restart, and now here): absence is checked BEFORE `enabled`, because
+    `wsl.enabled` DERIVES from a distro resolving — asking it first reports a
+    machine that has no WSL as a human decision to switch the bridge off.
+
+    `absent` and `error` stay different facts: nothing to run over there, vs
+    the WSL side is up and nothing answers on the port. The second is the exact
+    failure this lifecycle exists to make visible, and collapsing it into a
+    blank is how it stayed invisible for a day (2026-08-19).
+    """
+    if not cfg.wsl.distro:
+        return _r(ABSENT, "no WSL distro resolved")
+    if not cfg.wsl.enabled:
+        return _r(OFF, "disabled in hub.toml")
+    host = wsl_ip(cfg)
+    if not host:
+        return _r(ERROR, f"{cfg.wsl.distro} is present but its IP did not resolve")
+    url = f"http://{host}:{cfg.wsl.bridge_port}/snapshot"
+    ok, why = reach(url)
+    return _r(READY, url) if ok else _r(ERROR, f"no bridge at {url}: {why}")
+
+
 def base(cfg) -> dict:
     p = shutil.which(cfg.paths.base_bin)
     return _r(READY, p) if p else _r(ABSENT, f"{cfg.paths.base_bin} not on PATH")
@@ -138,5 +179,6 @@ def audio(cfg, exists=None) -> dict:
 
 def probe_all(cfg, reach=_reachable) -> dict:
     return {"stt": stt(cfg, reach=reach), "tts": tts(cfg), "cx_ptt": cx_ptt(cfg),
-            "wsl": wsl(cfg), "base": base(cfg),
+            "wsl": wsl(cfg), "bridge": bridge(cfg, reach=reach),
+            "base": base(cfg),
             "cx_restart": cx_restart(cfg), "audio": audio(cfg)}

@@ -260,8 +260,10 @@ def installed_source(read_direct_url=None, list_dists=None) -> str:
 
 
 def deploy_bridge(cfg, deploy_unc: str | None = None,
-                  config_unc: str | None = None, log=_log) -> dict:
-    """Copy the bridge into WSL and drop its config beside it.
+                  config_unc: str | None = None, log=_log,
+                  python: str = "") -> dict:
+    """Copy the bridge into WSL, drop its config beside it, and lay down the
+    systemd user unit that keeps it running.
 
     The bridge runs INSIDE WSL against WSL's own base store; the hub never
     reads that store over the share. Both paths are written from Windows over
@@ -295,7 +297,18 @@ def deploy_bridge(cfg, deploy_unc: str | None = None,
             f"standing_title = {json.dumps(cfg.hub.standing_title)}\n")
     conf.write_text(body, encoding="utf-8", newline="\n")
     log(f"wrote {conf}")
-    return {"script": str(dest), "config": str(conf),
+
+    # the unit is written here, beside the two files it refers to, and ENABLED
+    # separately by autostart.register_bridge — writing a file over the share
+    # is this module's job, talking to systemd is not
+    from ping_hub import autostart
+    unit_dir = home / ".config" / "systemd" / "user"
+    unit_dir.mkdir(parents=True, exist_ok=True)
+    unit = unit_dir / autostart.BRIDGE_UNIT
+    unit.write_text(autostart.bridge_unit_text(cfg, python),
+                    encoding="utf-8", newline="\n")
+    log(f"wrote {unit}")
+    return {"script": str(dest), "config": str(conf), "unit": str(unit),
             "linux_path": f"{cfg.wsl.bridge_deploy_linux}/wsl-bridge.py"}
 
 

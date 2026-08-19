@@ -5,6 +5,7 @@ forked. Port 7799. Endpoints:
 
   GET  /                       hub.html
   GET  /api/threads            roster snapshot (both tabs derive from this)
+  GET  /api/bridge             WSL bridge liveness {up, since, detail, enabled}
   GET  /api/thread?side&title  journal tail for one thread
   POST /api/send               {side,title,msg} -> base relay ping --from chris
   POST /api/end-then-close     {side,title} -> ask the session to close out
@@ -466,6 +467,13 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/threads":
             with engine.lock:
                 self._json(sorted(engine.threads.values(), key=lambda t: t["title"]))
+        elif u.path == "/api/bridge":
+            # a SIBLING of /api/threads, not a field on it: that endpoint
+            # returns a bare list and reshaping it would break the UI and every
+            # probe reading it. Bridge-down has to be answerable even when the
+            # roster is empty, which is exactly when it matters most.
+            with engine.lock:
+                self._json(dict(engine.bridge_state))
         elif u.path == "/api/thread":
             q = parse_qs(u.query)
             title = (q.get("title") or [""])[0]

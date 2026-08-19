@@ -83,8 +83,11 @@ def cmd_install(args) -> int:
     if args.deploy_bridge:
         # off by default: this writes into a live WSL home, and on a two-sided
         # machine the bridge it replaces may be running right now
-        b = install.deploy_bridge(cfg)
-        print(f"\nbridge deployed. Start it in WSL with:\n  python3 {b['linux_path']}")
+        b = install.deploy_bridge(cfg, python=autostart.bridge_python(cfg))
+        print(f"\nbridge deployed to {b['linux_path']}")
+        print("bridge autostart:")
+        for line in autostart.register_bridge(cfg):
+            print(f"  {line}")
 
     target = Path(args.config) if args.config else cfg.paths.base_gbl / "hub.toml"
     install.write_hub_toml(target, sections)
