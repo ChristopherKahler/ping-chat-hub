@@ -137,7 +137,7 @@ def session_meta(sid: str, cwd: str) -> dict:
     model/effort from the transcript tail. Mirrors the hub's win-side logic."""
     proj = CLAUDE_PROJ / cwd.replace("/", "-")
     out = {"label": "", "model": "", "effort": "", "ctx": 0, "doing": "",
-           "active": False}
+           "active": False, "doing_at": 0}
     idx = proj / "sessions-index.json"
     try:
         imt = idx.stat().st_mtime
@@ -165,6 +165,8 @@ def session_meta(sid: str, cwd: str) -> dict:
     # active = the transcript moved in the last 90s (WSL has no hook-events
     # feed the hub can read; transcript freshness is the honest signal)
     out["active"] = (time.time() - jmt) < 90
+    # the hub renders the verb with its age, so the age has to cross the bridge
+    out["doing_at"] = jmt
     cached = _meta_cache.get(sid)
     if cached and cached[0] == jmt:
         out.update(cached[1])

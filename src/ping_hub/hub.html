@@ -705,6 +705,22 @@ async function loadRoster() {
   updateWorking();
 }
 
+// A verb with no clock on it is the silent-lie class: `doing` is the shape of
+// the last transcript record, kept forever, so dead sessions sat there
+// reporting "reading the prompt" hours later. Fresh it reads bare; past that
+// it carries its age; past the ceiling it does not appear at all, because an
+// unknown state must render as unknown rather than as the last known one.
+// (15s / 10min: Chris's numbers via toucan, 2026-08-19.)
+const VERB_FRESH_SECS = 15, VERB_CEILING_SECS = 600;
+function verbWithAge(t, now) {
+  if (!t || !t.doing) return "";
+  if (!t.doing_at) return t.doing;          // no timestamp: say the verb, plain
+  const age = Math.max(0, Math.round((now || Date.now() / 1000) - t.doing_at));
+  if (age <= VERB_FRESH_SECS) return t.doing;
+  if (age > VERB_CEILING_SECS) return "";
+  return t.doing + " · " + (age < 90 ? age + "s" : Math.round(age / 60) + "m") + " ago";
+}
+
 // pulsing indicator while the OPEN thread's session is mid-tool-run
 function updateWorking() {
   const t = roster.find(x => x.title === sel && x.side === selSide);
@@ -716,7 +732,7 @@ function updateWorking() {
       w.innerHTML = `<span></span><span></span><span></span><span class="wdoing"></span>`;
       document.getElementById("msgs").appendChild(w);
     }
-    w.querySelector(".wdoing").textContent = t.doing || "";
+    w.querySelector(".wdoing").textContent = verbWithAge(t);
     document.getElementById("msgs").appendChild(w);  // keep it last
   } else if (w) w.remove();
 }
@@ -872,12 +888,18 @@ function renderList() {
     if (tab === "term" && t._child && accCollapsed(t._under)) continue;
     const el = document.createElement("div");
     const statePill = t.active ? '<span class="badge act">● active</span>'
-                    : (t.watching ? '<span class="badge watch">watching</span>' : '');
+                    : (t.watching ? '<span class="badge watch">watching</span>'
+                    : (t.idle ? '<span class="badge watch" title="its recorded process is confirmed running">idle</span>' : ''));
     // a relay mirror: this session id is registered on both sides and the
     // real one is elsewhere. It is plumbing, so it never offers to boot and
     // never reads as a session that went quiet.
     const ghost = !!t.ghost;
-    const dead = !t.watching && !t.active && !ghost;
+    // idle is NOT dead. A session waiting for a ping has no wake monitor and a
+    // quiet transcript, which is what the old test measured — so the board
+    // offered "▶ boot" on `quokka` while its recorded pid was demonstrably
+    // running, and taking that offer would have put two sessions on one
+    // codename. `idle` is set only when the recorded process is CONFIRMED.
+    const dead = !t.watching && !t.active && !t.idle && !ghost;
     const isSel = tab === "esc"
       ? !!(escFilter && escFilter.from === t.title && escFilter.side === t.side)
       : (t.title === sel && t.side === selSide);
@@ -2097,11 +2119,20 @@ async function refreshEscBadge() {
 document.getElementById("clearb").onclick = async () => {
   if (!sel) return;
   const q = new URLSearchParams({ title: sel, side: selSide });
-  let p;
+  let p, rp;
   try {
     p = await (await fetch("/api/clear-preview?" + q)).json();
   } catch (e) {
     p = { reapable: false, reason: e.message, handoff: { found: false } };
+  }
+  // the same probe read the other way. On a session that cannot be confirmed
+  // this modal used to offer Cancel and nothing else — a dead end on exactly
+  // the sessions it exists for, which is what left Chris hunting a session id
+  // to type `claude --resume` by hand, impossible from a phone.
+  try {
+    rp = await (await fetch("/api/resume-preview?" + q)).json();
+  } catch (e) {
+    rp = { resumable: false, reason: e.message };
   }
   const h = p.handoff || { found: false };
   const ov = document.createElement("div");
@@ -2124,8 +2155,15 @@ document.getElementById("clearb").onclick = async () => {
            ritual, register a handoff, and then end itself — it stays up for a
            few minutes and the card clears when it is done.</div>`
       : ""}
+    ${rp.resumable
+      ? `<div class="hint okline"><b>This session is not running.</b> Resume boots a
+           terminal in ${(rp.cwd || "").replace(/</g, "&lt;")} running
+           <code>claude --resume ${(rp.session_id || "").slice(0, 8)}</code> with the
+           codename pinned, so this thread carries on where it stopped.</div>`
+      : (canAct ? "" : `<div class="hint">Resume is not on offer: ${(rp.reason || "unknown").replace(/</g, "&lt;")}</div>`)}
     <div class="actions">
       <button class="cancel">Cancel</button>
+      ${rp.resumable ? `<button class="save" id="do-resume">Resume session</button>` : ""}
       ${canAct && !h.found ? `<button class="save" id="do-endclose">Close out first</button>` : ""}
       ${canAct ? `<button class="danger" id="do-close">Close session</button>
                   <button class="save" id="do-clear">Clear and reboot</button>` : ""}
@@ -2134,6 +2172,37 @@ document.getElementById("clearb").onclick = async () => {
   document.body.appendChild(ov);
   ov.onclick = e => { if (e.target === ov) ov.remove(); };
   ov.querySelector(".cancel").onclick = () => ov.remove();
+
+  const rb = ov.querySelector("#do-resume");
+  if (rb) rb.onclick = async e => {
+    const btn = e.target;
+    btn.disabled = true;
+    btn.textContent = "resuming…";
+    let out = {};
+    try {
+      out = await (await fetch("/api/resume", { method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ title: sel, side: selSide }) })).json();
+    } catch (err) {
+      out = { ok: false, detail: err.message };
+    }
+    if (!out.ok) {                 // never close the modal on a refusal
+      btn.disabled = false;
+      btn.textContent = "retry";
+      ov.querySelector("h2").insertAdjacentHTML("afterend",
+        `<div class="hint warn">${(out.detail || "failed").replace(/</g, "&lt;")}</div>`);
+      return;
+    }
+    // watch for the codename coming back. `--resume` mints a NEW session id, so
+    // this is a session-id change on a known title — which spawnWatch's isNew
+    // test already counts as ours (the ocelot lesson).
+    spawnWatch = { side: selSide, cwd: rp.cwd || "", until: Date.now() + 180000,
+                   expectTitle: sel, parent: "",
+                   sids: Object.fromEntries(roster.map(t =>
+                     [t.side + ":" + t.title, t.session_id || ""])) };
+    ov.remove();
+    loadRoster();
+  };
   if (!canAct) return;
 
   const act = async (path, btn) => {

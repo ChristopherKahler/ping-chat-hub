@@ -56,6 +56,10 @@ INBOX_POLL_SECS = 1.0
 # polling faster than this buys nothing and polling slower loses a whole
 # missed-refresh window.
 CXPTT_POLL_SECS = 20.0
+# how often a card that reads dead may re-ask the recorded pid whether it is
+# actually alive. `reap.confirm` is a CIM query on Windows; the roster polls
+# every two seconds and must never pay that per card per poll.
+ALIVE_RECHECK_SECS = 30.0
 HUB_TITLE = CFG.hub.standing_title  # the universal pipe — the hub IS this session
 
 
@@ -188,6 +192,7 @@ class Engine:
         self._inbox_snapshot: dict[str, set[str]] = {}
         self._last: dict[str, dict] = {}         # "side:title" -> latest ping preview
         self._meta_cache: dict[str, tuple] = {}  # sid -> (jsonl mtime, {model, effort})
+        self._alive_cache: dict[str, tuple] = {}  # title -> (checked_at, ok)
         self._path_cache: dict[str, Path] = {}   # sid -> transcript found off-cwd
         self._rel_cache: list = [0.0, {}]        # relations.json mtime cache
         self._idx_cache: dict[str, tuple] = {}   # index path -> (mtime, {sid: summary})
@@ -387,6 +392,37 @@ class Engine:
             self._rel_cache = [mt, _read_json(HUB_DIR / "relations.json") or {}]
         return self._rel_cache[1]
 
+    @staticmethod
+    def transcript_path(sid: str, side: str, cwd: str) -> Path | None:
+        """Where this session's transcript actually is, or None.
+
+        Load-bearing for resume: `claude --resume <sid>` with no transcript to
+        resume exits immediately and takes its own error message off the screen
+        with it. Measured 2026-08-19 on the scratch session `resume-probe` —
+        killed 25s in, before Claude Code had written the file, so the resume
+        booted, found nothing, and died silently. Better to refuse up front.
+
+        The transcript lives under the BOOT cwd's project dir, so the direct
+        path is tried first and the whole root searched second — a session that
+        registered from a subfolder is still findable.
+        """
+        if not sid:
+            return None
+        root = wsl_claude_proj() if side == "wsl" else CLAUDE_PROJ
+        if root is None:
+            return None
+        jp = root / _munge(cwd or "") / f"{sid}.jsonl"
+        if jp.exists():
+            return jp
+        try:
+            for d in root.iterdir():
+                c = d / f"{sid}.jsonl"
+                if c.exists():
+                    return c
+        except OSError:
+            pass
+        return None
+
     def transcript_responses(self, title: str, side: str, n: int = 10) -> list[dict]:
         """Last n assistant TEXT replies from the session's transcript — the
         subtle terminal mirror behind the thread accordion (Chris 2026-08-17).
@@ -520,6 +556,11 @@ class Engine:
             jmt = jp.stat().st_mtime
         except OSError:
             return out
+        # the verb travels with the age of the thing it was read from. Without
+        # it the UI can only render "thinking" as though it were happening now,
+        # which is the whole silent-lie class: `hawk`, dead 21h, was still
+        # reporting "reading the prompt".
+        out["doing_at"] = jmt
         cached = self._meta_cache.get(sid)
         if cached and cached[0] == jmt:
             out.update(cached[1])
@@ -655,6 +696,30 @@ class Engine:
         self._idx_cache["hookev"] = (size, m)
         return m
 
+    def _confirmed_alive(self, title: str, now: float) -> bool | None:
+        """Is this session's recorded process still that process? None = no
+        record, so the question cannot be answered.
+
+        This is the strong proof, and until 2026-08-19 the card did not ask.
+        Liveness was inferred from two weak proxies — a wake-monitor sentinel
+        and transcript churn — and an idle session has neither. Measured on
+        `quokka`: pid 34243 alive with its start-time anchor matching, while
+        the card read dead and offered to boot a fresh session onto its
+        codename. That offer would have put TWO sessions on one title.
+
+        Asked only for cards that would otherwise render dead, and rechecked at
+        most every 30s: `confirm` costs a CIM query per Windows session and the
+        roster polls every two seconds.
+        """
+        hit = self._alive_cache.get(title)
+        if hit and now - hit[0] < ALIVE_RECHECK_SECS:
+            return hit[1]
+        from ping_hub import reap
+        rec = reap.find_record(INBOX_ROOT, title)
+        ans = None if not rec else reap.confirm(rec)[0]
+        self._alive_cache[title] = (now, ans)
+        return ans
+
     def _status(self, title: str) -> str:
         """Session-written live status: relay-inbox/<title>/.status (dotfile,
         invisible to inbox scans). Convention: a session updates it with one
@@ -746,6 +811,17 @@ class Engine:
                 key = f"{self.side}:{title}"
                 t["parent"] = (rel.get(key) or "").split(":")[-1]
                 t["children"] = sum(1 for v in rel.values() if v == key)
+            # A card with no wake monitor and a quiet transcript is not dead —
+            # that is the normal state of a session waiting for a ping. Ask the
+            # recorded pid before letting the UI offer to replace it.
+            for title, t in self.threads.items():
+                if not title.startswith(f"{self.side}:") or t.get("seen_at") != now:
+                    continue
+                t["idle"] = False
+                if t.get("active") or t.get("watching"):
+                    continue
+                if self._confirmed_alive(t["title"], now):
+                    t["idle"] = True
             # registry pruned a title -> keep the thread, mark it gone (history
             # is never deleted; gray-out is the UI's job)
             for key, t in self.threads.items():
@@ -1148,6 +1224,15 @@ class Engine:
                         if key.startswith("wsl:"):
                             t["watching"] = False
                             t["bridge_down"] = True
+                            # active and doing were left ALONE here until
+                            # 2026-08-19, so every wsl card kept its last
+                            # `active: true` and its last verb for as long as
+                            # the bridge stayed down — pulsing dots and a verb
+                            # frozen at the instant the transport died. After a
+                            # reboot that is a whole board of live-looking work
+                            # that stopped minutes ago.
+                            t["active"] = False
+                            t["idle"] = False
                 self._emit({"event": "roster", "side": "wsl"})
                 now = time.time()
                 if self._heal.due(now):
@@ -1183,7 +1268,12 @@ class Engine:
                     active=bool(e.get("active")),
                     ctx=e.get("ctx", 0) or 0,
                     doing=e.get("doing", ""),
+                    doing_at=e.get("doing_at", 0) or 0,
                 )
+                if not t.get("active") and not t.get("watching"):
+                    t["idle"] = bool(self._confirmed_alive(title, time.time()))
+                else:
+                    t["idle"] = False
                 for p in (e.get("projects") or []):
                     self._project_note(f"wsl:{title}", p.strip())
                 t["projects"] = self._projects.get(f"wsl:{title}", [])

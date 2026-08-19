@@ -7,6 +7,8 @@ forked. Port 7799. Endpoints:
   GET  /api/threads            roster snapshot (both tabs derive from this)
   GET  /api/bridge             WSL bridge liveness {up, since, detail, enabled}
   GET  /api/cxptt              cx-ptt daemon liveness {alive, since, detail, enabled}
+  GET  /api/resume-preview     can this dead thread be resumed, and why not
+  POST /api/resume             {side,title} -> boot `claude --resume <sid>`, codename pinned
   GET  /api/thread?side&title  journal tail for one thread
   POST /api/send               {side,title,msg} -> base relay ping --from chris
   POST /api/end-then-close     {side,title} -> ask the session to close out
@@ -479,6 +481,24 @@ class Handler(BaseHTTPRequestHandler):
             # roster is empty, which is exactly when it matters most.
             with engine.lock:
                 self._json(dict(engine.bridge_state))
+        elif u.path == "/api/resume-preview":
+            # the mirror image of /api/clear-preview, and deliberately the SAME
+            # probe: "can this be cleared" and "should this be resumed" are one
+            # question asked from two sides, and two probes could disagree.
+            from ping_hub import reap
+            q = parse_qs(u.query)
+            title = (q.get("title") or [""])[0]
+            side = (q.get("side") or ["win"])[0]
+            with engine.lock:
+                t = dict(engine.threads.get(f"{side}:{title}") or {})
+            ok, why = reap.confirm(reap.find_record(INBOX_ROOT, title))
+            self._json({"title": title, "side": side,
+                        "resumable": (bool(t.get("session_id")) and bool(t.get("cwd"))
+                                      and not ok and not _still_reporting(t)),
+                        "alive": ok,
+                        "session_id": t.get("session_id", ""),
+                        "cwd": t.get("cwd", ""),
+                        "reason": _resume_reason(t, ok, why)})
         elif u.path == "/api/cxptt":
             # the same shape and the same reason as /api/bridge: a service the
             # hub supervises has to be able to report itself dead even when
@@ -1029,6 +1049,63 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._json({"ok": True, "rebooted": True, "detail": detail,
                         "handoff": match["slug"] if match else ""})
+        elif u.path == "/api/resume":
+            # Boot the SAME conversation back onto the SAME codename. `--resume`
+            # mints a new session id (measured: 50 of 1184 transcripts carry a
+            # prior one), so what binds the thread is BASE_RELAY_AS, which is
+            # why `title` is passed and why the card's session id is expected
+            # to change.
+            from ping_hub import reap
+            title = payload.get("title", "")
+            side = payload.get("side", "win")
+            if not title:
+                self._json({"ok": False, "detail": "title required"}, 400)
+                return
+            with engine.lock:
+                t = dict(engine.threads.get(f"{side}:{title}") or {})
+            sid, cwd = t.get("session_id", ""), t.get("cwd", "")
+            ok, why = reap.confirm(reap.find_record(INBOX_ROOT, title))
+            detail = _resume_reason(t, ok, why)
+            if not sid:
+                self._json({"ok": False, "detail": detail}, 404)
+                return
+            if sid and cwd and not ok and not _still_reporting(t) \
+                    and engine.transcript_path(sid, side, cwd) is None:
+                # `--resume` with no transcript exits instantly and silently.
+                # Refusing here turns that into an answer.
+                self._json({"ok": False, "detail": (
+                    f"no transcript on disk for session {sid[:8]} — there is "
+                    f"nothing to resume. It was probably ended before Claude "
+                    f"Code wrote one.")}, 409)
+                return
+            if not cwd or ok or _still_reporting(t):
+                # refusing OUT LOUD: a resume that quietly did nothing on a
+                # live session would read as the button being broken
+                self._json({"ok": False, "detail": detail}, 409)
+                return
+            args = ["--dangerously-skip-permissions"]
+            if CFG.spawn.disallowed_tools:
+                args += ["--disallowedTools", ",".join(CFG.spawn.disallowed_tools)]
+            args += ["--resume", sid]
+            # NO prompt: `claude --resume <sid> "text"` injects a user turn, and
+            # the thread has to come back where it left off, not with a message
+            # the hub wrote pushed into it.
+            try:
+                spawn_tab(side, args, cwd, title=title)
+            except OSError as e:
+                self._json({"ok": False, "detail": f"resume failed to boot: {e}"}, 500)
+                return
+            # the attempt goes in the JOURNAL, so what happened is legible from
+            # the thread itself afterwards even if the tab dies on boot
+            engine.append(title, {"from": "hub", "dir": "in", "peer": True,
+                                  "slug": f"resume-{sid[:8]}",
+                                  "summary": f"resume requested — session {sid[:8]}, "
+                                             f"{side}, {cwd}"}, side=side)
+            # the thread hears the OUTCOME, not just the request
+            threading.Thread(target=_resume_watch, args=(title, side, sid),
+                             daemon=True).start()
+            self._json({"ok": True, "session_id": sid,
+                        "detail": f"resuming {title} ({sid[:8]}) in {cwd}"})
         elif u.path == "/api/settings":
             try:
                 save_hub_settings(payload)
@@ -1091,6 +1168,89 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True, "note": "bridge ingestion lands at H3b"})
         else:
             self._json({"error": "not found"}, 404)
+
+
+# How long a resumed session gets to come back before the thread is told it
+# did not. Generous: a cold `claude --resume` on a large transcript is slow,
+# and crying failure over a session that is merely still loading would be its
+# own lie.
+RESUME_WINDOW_SECS = 150.0
+RESUME_POLL_SECS = 5.0
+
+
+def _resume_watch(title: str, side: str, old_sid: str, sleep=None, clock=None) -> str:
+    """Say in the THREAD whether the resume came back. Returns what it wrote.
+
+    The gap this closes, found by its own G2 probe on 2026-08-19: the endpoint
+    answered 200, wrote "resume requested", and then nothing ever said the
+    session had not returned. Only the browser noticed, client-side, and only
+    while that page stayed open — so from the phone, later, a failed resume was
+    indistinguishable from one that worked. The fork's DoD says a resume that
+    fails to boot must surface in the thread and never vanish; this is that.
+
+    Coming back is NOT only a changed session id. `--resume` mints a new one
+    here, but that is a fact about today's Claude Code rather than a contract,
+    so any sign of the codename reporting in counts.
+    """
+    sleep = sleep or time.sleep
+    clock = clock or time.time
+    deadline = clock() + RESUME_WINDOW_SECS
+    while clock() < deadline:
+        sleep(RESUME_POLL_SECS)
+        with engine.lock:
+            t = dict(engine.threads.get(f"{side}:{title}") or {})
+        sid = t.get("session_id") or ""
+        if (sid and sid != old_sid) or t.get("active") or t.get("watching"):
+            msg = (f"resumed — {title} is reporting in again"
+                   + (f" as {sid[:8]}" if sid and sid != old_sid else ""))
+            break
+    else:
+        msg = (f"resume did NOT come back within {int(RESUME_WINDOW_SECS)}s — "
+               f"the tab opened and the session never registered. Its terminal "
+               f"may show why.")
+    engine.append(title, {"from": "hub", "dir": "in", "peer": True,
+                          "slug": f"resume-result-{old_sid[:8]}-{int(clock())}",
+                          "summary": msg}, side=side)
+    return msg
+
+
+def _still_reporting(t: dict) -> bool:
+    """Is this session showing ANY sign of life besides its recorded pid?
+
+    Load-bearing, and learned the hard way at 14:02 on 2026-08-19: a dead
+    RECORD is not a dead SESSION. `zebra` and `toucan` were both working, both
+    heartbeating, `toucan` mid-tool-run — and both had a `.pid` naming a
+    process that genuinely no longer exists, because a session that gets
+    rebooted or reclaims its codename leaves the old record behind. `confirm`
+    answered correctly ("process 196849 is not running") and the first cut of
+    the preview turned that into "resumable", which would have offered one-tap
+    Resume on a live working session and put a SECOND session on its codename.
+
+    That is the identical hazard the ▶ boot button had. Resume is offered only
+    when NOTHING claims this session is alive.
+    """
+    return bool(t.get("active") or t.get("watching") or t.get("idle"))
+
+
+def _resume_reason(t: dict, alive: bool, why: str) -> str:
+    """Why resume is or is not on offer, in words that name the actual state.
+
+    A control that is simply absent teaches nothing. The dead-end this fixes
+    was exactly that: on a session that could not be confirmed, the clear modal
+    offered Cancel and nothing else, with no account of why.
+    """
+    if not t.get("session_id"):
+        return "no session id on this thread — nothing to resume"
+    if not t.get("cwd"):
+        return ("no recorded working directory — `--resume` from the wrong "
+                "folder does not find the session")
+    if alive:
+        return f"it looks alive: {why} is running. Clear it first if it is wedged."
+    if _still_reporting(t):
+        return (f"it is still reporting in, so the RECORD is stale, not the "
+                f"session ({why}). Resuming would put a second session on this "
+                f"codename.")
+    return why
 
 
 def page_version(path=None) -> str:
