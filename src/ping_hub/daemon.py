@@ -534,8 +534,15 @@ class Handler(BaseHTTPRequestHandler):
             ok, why = reap.confirm(reap.find_record(INBOX_ROOT, title))
             match = handoffs.for_session(
                 handoffs.listing(CFG.paths.base_bin), title, t.get("projects"))
+            # The third shape, and the reason CLEAR dead-ended for three days:
+            # a session that survived a reboot or a resume keeps a `.pid`
+            # naming the process that died with the old one, so `confirm`
+            # refuses forever while the session is plainly alive. It is not
+            # reapable and it is not dead — it can be ASKED to close itself.
+            stale = (not ok) and _still_reporting(t)
             self._json({"title": title, "side": side,
                         "reapable": ok, "reason": "" if ok else why,
+                        "stale": stale,
                         "handoff": handoffs.describe(match)})
         elif u.path == "/api/capabilities":
             # the package is opinionated: voice affordances always render, so
@@ -1001,8 +1008,16 @@ class Handler(BaseHTTPRequestHandler):
             if not title:
                 self._json({"ok": False, "detail": "title required"}, 400)
                 return
+            with engine.lock:
+                t = dict(engine.threads.get(f"{side}:{title}") or {})
             ok, why = reap.confirm(reap.find_record(INBOX_ROOT, title))
-            if not ok:
+            # The confirm-first rule stays, with one carve-out it needed all
+            # along: a session that is demonstrably REPORTING IN can close
+            # itself, because it ends itself and never needs a confirmable
+            # record to do it. Without this the button offered on a
+            # live-but-stale card would fail every single time — which is the
+            # dead end this fork exists to remove, moved one step later.
+            if not ok and not _still_reporting(t):
                 self._json({"ok": False, "detail": why}, 409)
                 return
             sent, detail = engine.send(

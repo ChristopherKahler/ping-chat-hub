@@ -220,6 +220,68 @@ def _anchor():
     return {"pid": pid, "image": comm, "created": created}
 
 
+def _facts(pid: int):
+    """{image, created} for a pid right now, or None. Same two anchors the
+    reaper compares: the image name and the start time."""
+    if not WIN:
+        row = _proc_nix(pid)
+        return {"image": row[0], "created": row[2]} if row else None
+    import subprocess
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "$ErrorActionPreference='SilentlyContinue';"
+             "$p=Get-CimInstance Win32_Process -Filter 'ProcessId=%d';"
+             "if($p){ $p.Name + '|' + $p.CreationDate.ToString('o') }" % int(pid)],
+            capture_output=True, text=True, timeout=25,
+            creationflags=0x08000000).stdout.strip()
+    except Exception:
+        return None
+    image, sep, created = out.partition("|")
+    return {"image": image, "created": created} if (sep and image) else None
+
+
+def _norm_created(v) -> str:
+    """Compare instants, not spellings — the recorder and the query round-trip
+    time through different formatters. Mirrors ping_hub.reap._norm; on WSL the
+    value is a raw tick count and passes through untouched."""
+    s = str(v or "").strip().replace("Z", "+00:00")
+    if not WIN:
+        return s
+    if len(s) >= 6 and s[-3] == ":" and s[-6] in "+-":
+        s = s[:-3] + s[-2:]
+    return s[:19]
+
+
+def _record_is_stale(rec) -> bool:
+    """Does this .pid describe a process that is no longer there?
+
+    Write-once was right about LIVE records and wrong about dead ones. Nothing
+    on this machine ever rewrote .pid, so a session that survived a reboot or a
+    resume -- a NEW process under the SAME codename -- kept a record naming the
+    pid that died with the old one, permanently. CLEAR then refused forever,
+    because it will never search for a substitute. Measured 2026-08-19: two of
+    four live sessions were in that state, and Chris had been unable to clear a
+    card for three days.
+
+    The three tests are `reap.confirm`'s own, so the two can never disagree
+    about what stale means. UNREADABLE IS NOT STALE: a record we cannot reason
+    about is left exactly as it is, because rewriting one we do not understand
+    is how a reaper learns to guess.
+    """
+    try:
+        doc = json.loads(rec.read_text(encoding="utf-8-sig"))
+        pid = int(doc["pid"])
+    except Exception:
+        return False
+    facts = _facts(pid)
+    if facts is None:
+        return True                                   # the process is gone
+    if str(facts.get("image", "")).lower() != str(doc.get("image", "")).lower():
+        return True                                   # the pid was reused
+    return _norm_created(facts.get("created")) != _norm_created(doc.get("created"))
+
+
 def arm_pid_record() -> str:
     """Record the process CLEAR must end, so it can confirm instead of search.
 
@@ -235,10 +297,14 @@ def arm_pid_record() -> str:
     """
     rec, tmp = INBOX / ".pid", None
     try:
-        if rec.exists():
+        if rec.exists() and not _record_is_stale(rec):
             return ""
         facts = _anchor()
         if not facts:
+            return ""
+        # a mis-resolved anchor must never become a kill target: the blast
+        # radius of WindowsTerminal.exe is every tab Chris has open
+        if str(facts.get("image", "")).lower() in _NEVER:
             return ""
         INBOX.mkdir(parents=True, exist_ok=True)
         tmp = INBOX / (".pid.tmp-%d" % os.getpid())

@@ -2138,12 +2138,23 @@ document.getElementById("clearb").onclick = async () => {
   const ov = document.createElement("div");
   ov.id = "overlay";
   const canAct = !!p.reapable;
+  // live, but its .pid names the process that died with its previous life.
+  // Not reapable and not dead — it can be ASKED to close itself, which is the
+  // one action that never needed a confirmable record. This is the modal that
+  // had Cancel as its only button for three days.
+  const staleLive = !canAct && !!p.stale;
   ov.innerHTML = `<div id="modal">
     <h2>clear ${sel}</h2>
     ${canAct
       ? `<div class="hint">This ends ${sel}'s terminal and everything running in
            it. Unsaved work in that tab is gone.</div>`
-      : `<div class="hint warn">Cannot end this session: ${p.reason || "unknown"}</div>`}
+      : (staleLive
+        ? `<div class="hint">${sel} is alive and reporting in, but the process
+             record left over from its previous life names a pid that is gone,
+             so it cannot be ended directly. <b>Close out first</b> asks it to
+             end itself, which needs no record. The record repairs itself the
+             next time this session goes idle.</div>`
+        : `<div class="hint warn">Cannot end this session: ${p.reason || "unknown"}</div>`)}
     <h3>handoff</h3>
     <div class="${h.found ? (h.via === "project" ? "warn" : "okline") : "warn"}">
       ${h.found ? h.headline : "NO HANDOFF DETECTED"}</div>
@@ -2164,7 +2175,8 @@ document.getElementById("clearb").onclick = async () => {
     <div class="actions">
       <button class="cancel">Cancel</button>
       ${rp.resumable ? `<button class="save" id="do-resume">Resume session</button>` : ""}
-      ${canAct && !h.found ? `<button class="save" id="do-endclose">Close out first</button>` : ""}
+      ${(canAct && !h.found) || staleLive
+        ? `<button class="save" id="do-endclose">Close out first</button>` : ""}
       ${canAct ? `<button class="danger" id="do-close">Close session</button>
                   <button class="save" id="do-clear">Clear and reboot</button>` : ""}
     </div>
@@ -2203,8 +2215,6 @@ document.getElementById("clearb").onclick = async () => {
     ov.remove();
     loadRoster();
   };
-  if (!canAct) return;
-
   const act = async (path, btn) => {
     btn.disabled = true;
     btn.textContent = "working…";
@@ -2226,8 +2236,10 @@ document.getElementById("clearb").onclick = async () => {
     ov.remove();
     loadRoster();
   };
-  ov.querySelector("#do-clear").onclick = e => act("/api/clear", e.target);
-  ov.querySelector("#do-close").onclick = e => act("/api/close-session", e.target);
+  if (canAct) {
+    ov.querySelector("#do-clear").onclick = e => act("/api/clear", e.target);
+    ov.querySelector("#do-close").onclick = e => act("/api/close-session", e.target);
+  }
 
   // Close-out first does NOT end anything — it hands the session an
   // instruction and the ritual takes minutes. So this one must not borrow

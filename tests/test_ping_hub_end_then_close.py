@@ -94,8 +94,24 @@ def test_the_modal_action_row_wraps():
 def test_the_close_out_button_is_offered_only_without_a_handoff():
     """A session that already has a handoff has nothing to write first, so the
     third way out is not offered — the button is gated on !h.found, not on
-    canAct alone."""
+    canAct alone.
+
+    AMENDED 2026-08-19 (hub-clear-stale-records): this rule was written before
+    live-but-stale existed as a shape. On a card whose `.pid` names the process
+    that died with its previous life, clear and close are both impossible, so
+    withholding close-out because a handoff exists puts Cancel back as the only
+    button — the dead end that fork removes. The rule now has two directions
+    and both are pinned below.
+    """
     html = daemon.HTML.read_text(encoding="utf-8")
-    line = [l for l in html.splitlines() if "do-endclose" in l and "<button" in l]
-    assert line, "the close-out button is gone"
-    assert "canAct && !h.found" in line[0], line[0]
+    src = html[html.index("do-endclose") - 400:html.index("do-endclose") + 120]
+    assert "canAct && !h.found" in src, src
+    assert "staleLive" in src, "live-but-stale must be offered it too"
+
+
+def test_close_out_is_still_refused_on_a_live_session_that_has_a_handoff():
+    """The original direction, unchanged: nothing to write first."""
+    html = daemon.HTML.read_text(encoding="utf-8")
+    i = html.index("do-endclose")
+    assert "(canAct && !h.found)" in html[i - 400:i], \
+        "the handoff gate on the reapable path is gone"
