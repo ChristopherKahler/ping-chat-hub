@@ -69,6 +69,28 @@ def _read_json(path: Path) -> Any:
 # margin. Wider would start swallowing a message Chris deliberately repeated.
 ECHO_WINDOW = 10.0
 
+# Backfill is not a race, it is a bounded replay minutes later, so the echo
+# window cannot cover it — but the echo has no slug, so backfill cannot dedup
+# against it by id either. The entry carries its own dkey instead, and a match
+# must ALSO land inside this window: both stamps are send-times, so 60s is
+# generous. Without the bound, Chris sending the same short message twice and
+# having the second recovered by backfill would DROP it on a dkey hit from the
+# first — and a drop is the class we are killing. A miss appends and we eat the
+# duplicate, which is the standing rule.
+ECHO_BACKFILL_WINDOW = 60.0
+
+
+def ts_secs(value: str) -> float:
+    """Epoch seconds from a journal or ping timestamp. Unparseable returns 0.0,
+    which makes every comparison miss — i.e. it appends, never drops."""
+    from datetime import datetime
+    for fmt in ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(str(value)[:24], fmt).timestamp()
+        except (ValueError, TypeError):
+            continue
+    return 0.0
+
 
 def echo_key(side: str, title: str, sender: str, summary: str) -> str:
     """Weak identity for one outbound send, used at exactly ONE seam.
@@ -102,7 +124,16 @@ def epoch_reset(known, seen, cursor: int) -> tuple:
     """
     if seen is None:
         return cursor, known
-    if known is not None and seen != known:
+    if known is None:
+        # FIRST epoch we have ever seen. A cursor we are already carrying was
+        # built against a bridge that never identified itself, so its
+        # provenance is unknowable and it cannot be trusted against this
+        # process — reset rather than assume. This is not hypothetical: it is
+        # exactly the hub-upgraded-before-its-bridge window, and it froze the
+        # live hub for three minutes on 2026-08-19 until the live proof caught
+        # it. Unknown provenance resets; the replay is bounded and deduped.
+        return (0 if cursor else cursor), seen
+    if seen != known:
         return 0, seen
     return cursor, seen
 
@@ -169,13 +200,22 @@ class Engine:
                                    "detail": "not probed yet",
                                    "enabled": bool(CFG.wsl.enabled)}
         self._heal = _HealBudget()
-        # echo_key -> ts, for the echo-vs-watcher seam only (see echo_key)
+        # echo_key -> ts, the fast in-memory path for the echo-vs-watcher race
         self._echoes: dict[str, float] = {}
+        # the DURABLE form of the same fact, seeded from the journals at boot.
+        # In-memory alone is not enough: a hub restart between the send and the
+        # watcher's delivery loses the echo and the watcher writes a second
+        # copy — measured live 2026-08-19, echo at 11:09:27, duplicate at
+        # 11:09:33 across a restart. The dkey on the entry exists to survive
+        # exactly that, so it has to be consulted here too, not only in
+        # backfill.
+        self._dkeys: dict = {}
         # "side:title" -> every project that EVER touched the session (Chris
         # spec 2026-08-17: append on change, never remove — filter keywords)
         self._projects: dict[str, list] = _read_json(HUB_DIR / "projects.json") or {}
         HUB_DIR.joinpath("threads", self.side).mkdir(parents=True, exist_ok=True)
         self._load_seen()
+        self._dkeys = self._echo_index()
 
     def _project_note(self, key: str, project: str) -> None:
         if not project or project in self._projects.get(key, []):
@@ -224,6 +264,15 @@ class Engine:
                 "text": (entry.get("summary") or "")[:140],
             }
             self._seen.setdefault(f"{side}:{title}", set()).add(entry.get("slug", ""))
+            # EVERY outbound write registers its content key, whichever path
+            # wrote it. The race runs both ways: measured 2026-08-19, the echo
+            # won it once (11:09:27) and the watcher won it two minutes later
+            # (11:13:13), so a guard on only one side just moves the duplicate.
+            if entry.get("dir") == "out":
+                self._dkeys.setdefault(f"{side}:{title}", {})[
+                    echo_key(side, title, entry.get("from", ""),
+                             entry.get("summary", ""))] = ts_secs(
+                    entry.get("created") or entry.get("ts") or "") or time.time()
             with open(self.journal_path(title, side), "a", encoding="utf-8") as fh:
                 fh.write(json.dumps(entry) + "\n")
         self._emit({"event": "message", "side": side, "title": title, **entry})
@@ -734,8 +783,12 @@ class Engine:
                 # our own echo already journaled this send seconds ago; the
                 # slug cannot match it because base minted the slug after we
                 # had already returned
-                if direction == "out" and self._echo_recent(
-                        echo_key(self.side, tkey, src, ping.get("summary", ""))):
+                if direction == "out" and (
+                        self._echo_recent(echo_key(self.side, tkey, src,
+                                                   ping.get("summary", "")))
+                        or self._echoed_already(self._dkeys, self.side, tkey, {
+                            "from": src, "summary": ping.get("summary", ""),
+                            "created": ping.get("created", "")})):
                     continue
                 self.append(tkey, {
                     "slug": ping.get("slug", slug),
@@ -858,12 +911,23 @@ class Engine:
         hub usually loses — so Chris's own messages appeared only after a hub
         restart's backfill, wearing a boot timestamp instead of a send time.
         """
+        key = echo_key(side, title, sender, msg)
+        # the watcher may already have journaled this send: base writes the
+        # inbox file before our subprocess even returns, so on a fast delivery
+        # it wins the race and we must not add a second copy
+        if self._echoed_already(self._dkeys, side, title,
+                                {"from": sender, "summary": msg,
+                                 "created": time.strftime("%Y-%m-%dT%H:%M:%S%z")}):
+            return
         with self.lock:
-            self._echoes[echo_key(side, title, sender, msg)] = time.time()
+            self._echoes[key] = time.time()
         self.append(title, {
             "slug": "", "dir": "out", "peer": False, "from": sender,
             "to": title, "kind": "ping", "summary": msg,
             "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "echo": True,
+            # carried so backfill can recognise its own echo later: it has no
+            # slug to compare against, because base had not minted one yet
+            "dkey": echo_key(side, title, sender, msg),
         }, side=side)
 
     # ── send ─────────────────────────────────────────────────────────────
@@ -1081,8 +1145,11 @@ class Engine:
             tkey, direction, peer = inbox, "in", True
         if slug and slug in self._seen.get(f"wsl:{tkey}", set()):
             return
-        if direction == "out" and self._echo_recent(
-                echo_key("wsl", tkey, src, ping.get("summary", ""))):
+        if direction == "out" and (
+                self._echo_recent(echo_key("wsl", tkey, src, ping.get("summary", "")))
+                or self._echoed_already(self._dkeys, "wsl", tkey, {
+                    "from": src, "summary": ping.get("summary", ""),
+                    "created": ping.get("created", "")})):
             return
         self.append(tkey, {
             "slug": slug,
@@ -1131,6 +1198,7 @@ class Engine:
         """
         from ping_hub import backfill as bf
         seen, newest, floor = self._marks()
+        echoes = self._echo_index()
         written = 0
         stores = bf.graph_stores(CFG)
         for side, store in zip(("win", "wsl"), stores):
@@ -1139,12 +1207,50 @@ class Engine:
                 continue
             for entry in bf.plan(CFG, seen, newest, side, records, floor):
                 thread = entry.pop("_thread")
+                if entry.get("dir") == "out" and self._echoed_already(
+                        echoes, side, thread, entry):
+                    continue
                 self.append(thread, entry, side=side)
                 written += 1
         if written:
             print(f"backfilled {written} ping(s) the hub was down for",
                   flush=True)
         return written
+
+    def _echo_index(self) -> dict:
+        """{"side:thread" -> {dkey: ts_secs}} for entries WE echoed."""
+        idx: dict[str, dict[str, float]] = {}
+        for side in ("win", "wsl"):
+            d = HUB_DIR / "threads" / side
+            try:
+                files = list(d.glob("*.jsonl"))
+            except OSError:
+                continue
+            for f in files:
+                key = f"{side}:{f.stem}"
+                try:
+                    with open(f, encoding="utf-8") as fh:
+                        for line in fh:
+                            try:
+                                e = json.loads(line)
+                            except ValueError:
+                                continue
+                            if e.get("dkey"):
+                                idx.setdefault(key, {})[e["dkey"]] = ts_secs(
+                                    e.get("ts") or "")
+                except OSError:
+                    continue
+        return idx
+
+    def _echoed_already(self, idx: dict, side: str, thread: str,
+                        entry: dict) -> bool:
+        """Did we already journal this outbound ourselves, at send time?"""
+        k = echo_key(side, thread, entry.get("from", ""), entry.get("summary", ""))
+        when = idx.get(f"{side}:{thread}", {}).get(k)
+        if not when:
+            return False
+        theirs = ts_secs(entry.get("created") or entry.get("ts") or "")
+        return bool(theirs) and abs(theirs - when) <= ECHO_BACKFILL_WINDOW
 
     # ── loops ────────────────────────────────────────────────────────────
     def run(self) -> None:
