@@ -2517,6 +2517,34 @@ if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").cat
 
 loadRoster();
 refreshEscBadge();
+// ── shipped-version watch ─────────────────────────────────────────────────
+// no-store on / was already set and was still not enough: an INSTALLED PWA
+// keeps its own shell, so a shipped fix sat on the server while the page ran
+// last hour's javascript. Chris hit that twice on 2026-08-19 and the second
+// time it read as a regression in work that was already correct.
+let pageVersion = null;
+async function checkVersion() {
+  let v;
+  try {
+    v = (await (await fetch("/api/version", { cache: "no-store" })).json()).version;
+  } catch (e) { return; }          // hub restarting; try again next tick
+  if (!pageVersion) { pageVersion = v; return; }
+  if (v === pageVersion) return;
+  // never yank the page out from under something he is in the middle of
+  const busy = (document.getElementById("box") || {}).value
+            || document.querySelector("#overlay")
+            || document.getElementById("pop");
+  if (!busy) { location.reload(); return; }
+  if (!document.getElementById("newver")) {
+    const h = document.getElementById("hinfo");
+    if (h) h.insertAdjacentHTML("afterbegin",
+      '<div id="newver" class="badge escb" style="cursor:pointer">new version — tap to reload</div>');
+    const el = document.getElementById("newver");
+    if (el) el.onclick = () => location.reload();
+  }
+}
+checkVersion();
+setInterval(checkVersion, 20000);
 setInterval(loadRoster, 5000);
 setInterval(refreshEscBadge, 10000);
 </script>

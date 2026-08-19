@@ -467,6 +467,10 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/threads":
             with engine.lock:
                 self._json(sorted(engine.threads.values(), key=lambda t: t["title"]))
+        elif u.path == "/api/version":
+            # the open page polls this and reloads itself when it changes, so a
+            # ship reaches a client that never gets closed
+            self._json({"version": page_version()})
         elif u.path == "/api/bridge":
             # a SIBLING of /api/threads, not a field on it: that endpoint
             # returns a bare list and reshaping it would break the UI and every
@@ -534,6 +538,11 @@ class Handler(BaseHTTPRequestHandler):
                 ct = {"json": "application/manifest+json", "js": "text/javascript",
                       "png": "image/png"}[p.suffix.lstrip(".")]
                 self.send_response(200)
+                # the worker itself must never be the stale thing: a cached sw
+                # that hoards an old shell cannot be replaced by shipping a new
+                # one it will not fetch
+                if u.path == "/sw.js":
+                    self.send_header("Cache-Control", "no-store")
                 self.send_header("Content-Type", ct)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
@@ -1051,6 +1060,24 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True, "note": "bridge ingestion lands at H3b"})
         else:
             self._json({"error": "not found"}, 404)
+
+
+def page_version(path=None) -> str:
+    """A stamp that changes whenever the served page changes.
+
+    `Cache-Control: no-store` on / is already set and is still not enough: an
+    INSTALLED PWA keeps its own shell copy, so a shipped fix can sit on the
+    server while the client happily runs last hour's javascript. Chris hit that
+    twice on 2026-08-19 and the second time it read as a regression in work
+    that was already correct. A shipped fix that cannot reach an open client is
+    indistinguishable from one that does not work.
+    """
+    import hashlib
+    p = Path(path) if path else HTML
+    try:
+        return hashlib.sha1(p.read_bytes()).hexdigest()[:12]
+    except OSError:
+        return "unknown"
 
 
 class SingleInstanceError(RuntimeError):
