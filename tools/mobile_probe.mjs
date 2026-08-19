@@ -188,6 +188,53 @@ try {
       check(m.status.r <= m.vw + 0.5,
         `${width}: status line within the viewport (right edge ${m.status.r})`);
     }
+
+    // the launcher popover. Measured 2026-08-19 before it was a sheet: 508px
+    // wide on a 360px screen, hanging 76px off the left and 72px off the
+    // right, covering 121% of the viewport — so there was no outside left to
+    // tap, and tap-outside plus Esc were the only ways out. A phone has no Esc.
+    const q = await ev(`(async () => {
+      document.getElementById("spawn").click();
+      await new Promise(r => setTimeout(r, 1500));
+      const pop = document.getElementById("pop");
+      if (!pop) return { missing: true };
+      const b = pop.getBoundingClientRect();
+      const x = pop.querySelector("#popclose");
+      const xb = x && x.getBoundingClientRect();
+      const launch = pop.querySelector("#sp-launch");
+      const lb = launch && launch.getBoundingClientRect();
+      const out = {
+        l: Math.round(b.left), r: Math.round(b.right),
+        coverPct: Math.round(100 * (b.width * b.height) / (innerWidth * innerHeight)),
+        xw: xb ? Math.round(xb.width) : 0, xh: xb ? Math.round(xb.height) : 0,
+        xHit: !!x && document.elementFromPoint(xb.left + xb.width / 2,
+                                              xb.top + xb.height / 2) === x,
+        launchBottom: lb ? Math.round(lb.bottom) : -1,
+        sheet: pop.classList.contains("sheet"),
+      };
+      x.click();
+      await new Promise(r => setTimeout(r, 200));
+      out.closed = !document.getElementById("pop");
+      return out;
+    })()`);
+    if (q.missing) {
+      check(false, `${width}: launcher popover never opened`);
+    } else {
+      check(q.l >= 0 && q.r <= m.vw,
+        `${width}: launcher popover inside the viewport (${q.l}-${q.r} of ${m.vw})`);
+      check(q.xw >= 44 && q.xh >= 44,
+        `${width}: close control is a thumb target (${q.xw}x${q.xh}, want 44+)`);
+      check(q.xHit, `${width}: close control is on top and hit-testable`);
+      check(q.closed, `${width}: the close control actually dismisses it`);
+      if (width <= 700) {
+        check(q.sheet, `${width}: popover is a sheet on the phone`);
+        // covering the whole viewport is what removed tap-outside as an option
+        check(q.coverPct < 100,
+          `${width}: popover leaves an outside to tap (${q.coverPct}% covered)`);
+        check(q.launchBottom > 0 && q.launchBottom <= 915,
+          `${width}: Launch is on screen without scrolling (bottom ${q.launchBottom})`);
+      }
+    }
   }
 } catch (e) {
   console.error("probe error:", e.message);

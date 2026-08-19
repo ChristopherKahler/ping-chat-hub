@@ -185,7 +185,30 @@
   #pop .hint { font-size: 12px; color: var(--dim); margin-top: 8px; }
   #pop .row { display: flex; gap: 6px; flex-wrap: wrap; }
   #pop .row.spr { margin-top: 8px; flex-wrap: nowrap; }
-  #pop { max-height: 86vh; overflow-y: auto; }
+  /* max-width, not just a clamp on left: the width is measured BEFORE the
+     async selects fill, so a box positioned honestly can still grow past the
+     edge afterwards. Caught at 768px by mobile_probe — 780px wide, 12px off
+     the left, on a viewport the phone media query never touches. */
+  #pop { max-height: 86vh; overflow-y: auto; max-width: calc(100vw - 16px); }
+  /* injected by showPop, so it exists on every popover. Sticky and negatively
+     inset so it covers #pop's own 12px padding as content scrolls under it —
+     a close button that scrolls away is not a close button. */
+  #pop .popbar { position: sticky; top: -12px; z-index: 1; display: flex;
+                 justify-content: flex-end; background: var(--panel2);
+                 margin: -12px -12px 4px; padding: 6px 8px 4px; }
+  #pop .popbar button { min-width: 44px; min-height: 44px; padding: 0;
+                        font-size: 17px; line-height: 1; }
+  /* quick launch: presets sit at the TOP of the launcher, before the form,
+     because the whole point is not filling the form in */
+  #pop .qlab { flex: 1 0 100%; font-size: 12px; color: var(--dim); margin-bottom: 2px; }
+  #pop .qlbtn { border-color: var(--accent2); color: var(--accent); }
+  #pop .qlbtn:disabled { opacity: 0.5; }
+  #pop .spawnerr { color: var(--accent); border: 1px solid var(--accent2);
+                   border-radius: 6px; padding: 6px 8px; margin: 4px 0; }
+  #modal .qlrow { display: flex; align-items: center; gap: 8px; margin: 6px 0;
+                  padding: 8px; background: var(--panel2); border-radius: 8px; }
+  #modal .qlrow .qlname { flex: 1; min-width: 0; }
+  #modal .qlrow .qlsum { color: var(--dim); font-size: 12px; }
   .spsel { flex: 1; min-width: 0; background: var(--in); border: 1px solid var(--line);
     color: var(--text); border-radius: 6px; padding: 7px 10px; font-size: 14px;
     max-width: 82vw; font-family: inherit; }
@@ -390,6 +413,30 @@
     #msgs { padding: 10px; }
     .msg { max-width: 92%; }
     #modal { width: 94vw; padding: 14px; }
+    /* The cancel button measured 80x33 and sat below the fold inside the
+       modal's own scroll. Pin the row to the bottom and give it a thumb. */
+    #modal .actions { position: sticky; bottom: -14px; background: var(--panel);
+                      padding: 10px 0 4px; margin-top: 4px; }
+    #modal .actions button { min-height: 44px; }
+    /* Popovers become a BOTTOM sheet on the phone: full width, thumb-reachable,
+       geometry owned by CSS because showPop skips inline positioning in this
+       mode. Measured before this rule existed: 508px wide on a 360px screen,
+       76px off the left edge, 72px off the right, 121% of the viewport
+       covered — which is why there was no outside left to tap. The 8px inset
+       is deliberate: it keeps a visible tap-outside margin, so the existing
+       dismissal gesture survives instead of being replaced. */
+    #pop.sheet { left: 8px; right: 8px; top: auto;
+                 bottom: calc(8px + env(safe-area-inset-bottom));
+                 width: auto; max-width: none; max-height: 88vh; }
+    /* nowrap on .spr plus two 82vw children is what made it 508px wide */
+    #pop.sheet .row.spr { flex-wrap: wrap; }
+    /* Launch measured at y=866 on a 780px screen — past nine form rows of
+       scrolling. "Actions reachable with a thumb" means pinned, not present. */
+    #pop.sheet .popact { position: sticky; bottom: -12px; z-index: 1;
+                         background: var(--panel2); margin: 0 -12px -12px;
+                         padding: 8px 12px calc(8px + env(safe-area-inset-bottom)); }
+    #pop.sheet .spsel { max-width: 100%; }
+    #pop button { min-height: 44px; }
     /* TWO LINES on the phone: the input owns row one, the four controls share
        row two. The old single-row "thirds" plan budgeted for four children and
        the row has FIVE — #cmdb was never given an order — so two fixed buttons
@@ -472,17 +519,37 @@ function when(raw) {
 }
 
 // ── popover (no browser dialogs anywhere in this UI) ──────────────────────
+const onPhone = () => window.matchMedia("(max-width: 700px)").matches;
+
 function showPop(x, y, html) {
   closePop();
   const p = document.createElement("div");
   p.id = "pop";
-  p.innerHTML = html;
+  // The close control is injected HERE rather than left to callers. All three
+  // of them omitted one, and on a phone that is not cosmetic: measured
+  // 2026-08-19 at 360px, this box was 508px wide and covered 121% of the
+  // viewport, so tap-outside had no outside and Esc had no key. Chris could
+  // open the launcher and not get rid of it.
+  p.innerHTML = `<div class="popbar"><button id="popclose" title="close">✕</button></div>` + html;
   document.body.appendChild(p);
-  const r = p.getBoundingClientRect();
-  p.style.left = Math.min(x, window.innerWidth - r.width - 12) + "px";
-  p.style.top = Math.min(y, window.innerHeight - r.height - 12) + "px";
+  if (onPhone()) {
+    // a sheet, and CSS owns its geometry. The inline left/top below is exactly
+    // what put it at left:-76px: the clamp goes negative once the box is wider
+    // than the screen, and it measures a width the async selects have not
+    // filled in yet.
+    p.classList.add("sheet");
+  } else {
+    const r = p.getBoundingClientRect();
+    // Math.max(8, ...): the inner clamp goes NEGATIVE the moment the box is
+    // wider than the viewport, which is how it ended up at left:-76px
+    p.style.left = Math.max(8, Math.min(x, window.innerWidth - r.width - 12)) + "px";
+    p.style.top = Math.max(8, Math.min(y, window.innerHeight - r.height - 12)) + "px";
+  }
+  p.querySelector("#popclose").onclick = ev => { ev.stopPropagation(); closePop(); };
   setTimeout(() => {
-    document.addEventListener("mousedown", popOutside);
+    // pointerdown, not mousedown: on touch the mouse event is an emulated
+    // afterthought, and this is the phone's primary dismissal gesture
+    document.addEventListener("pointerdown", popOutside);
     document.addEventListener("keydown", popEsc);
   }, 0);
   return p;
@@ -491,7 +558,7 @@ function closePop() {
   const p = document.getElementById("pop");
   if (p) p.remove();
   if (window._spDraftTimer) { clearInterval(window._spDraftTimer); window._spDraftTimer = null; }
-  document.removeEventListener("mousedown", popOutside);
+  document.removeEventListener("pointerdown", popOutside);
   document.removeEventListener("keydown", popEsc);
 }
 function popOutside(e) {
@@ -1059,6 +1126,123 @@ let wsCache = null, spawnWatch = null;
 // alarm; enabled:false keeps the banner off machines that have no WSL at all
 let bridgeState = { up: true, probed: false, enabled: false, since: "", detail: "" };
 let spawnMeta = {};   // per-(side|workspace) launcher dropdown cache
+
+// ── quick launch ──────────────────────────────────────────────────────────
+// Presets live in settings.quick_launch — ONE store, two editors: the panel in
+// settings and the capture button in the launcher. hub/settings.json takes the
+// whole object verbatim (daemon save_hub_settings has no key whitelist), so
+// this needs nothing on the server.
+const qlAll = () => (hubCfg.quick_launch || []);
+const qlSave = () => fetch("/api/settings", { method: "POST",
+  headers: {"Content-Type": "application/json"}, body: JSON.stringify(hubCfg) });
+
+// blank keys are DROPPED rather than sent empty: /api/spawn derives its own
+// defaults, and "" is not the same thing to it as absent
+function qlClean(payload) {
+  const out = {};
+  for (const [k, v] of Object.entries(payload || {})) {
+    if (v === "" || v === null || v === undefined) continue;
+    if (Array.isArray(v) && !v.length) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+// The settings editor for presets. The DOM is the source of truth at save
+// time — no parallel array to keep in step, which is the drift drawReps warns
+// about one section below. Project and parent are free text here on purpose:
+// the launcher's Save preset button is the path that picks them off the LIVE
+// project / handoff / fork lists, and duplicating those feeds into settings
+// would give two lists that can disagree.
+function qlRowNode(q) {
+  const pl = (q && q.payload) || {};
+  const el = document.createElement("div");
+  el.className = "qlrow";
+  const sel = (v, opts) => opts.map(o =>
+    `<option ${String(v || "") === o ? "selected" : ""}>${o}</option>`).join("");
+  el.innerHTML = `<input class="qlname" placeholder="preset name">
+    <select class="qlside"><option value="win">win</option><option value="wsl">wsl</option></select>
+    <select class="qlmodel"><option value="">model</option>${sel(pl.model, ["fable", "opus", "sonnet"])}</select>
+    <select class="qleffort"><option value="">effort</option>${sel(pl.effort, ["low", "medium", "high", "xhigh", "max"])}</select>
+    <label class="qlsum"><input type="checkbox" class="qlgated"> gated</label>
+    <button class="rdel" title="remove">✕</button>
+    <input class="qlcwd" placeholder="workspace path (blank = home)" style="flex:1 0 100%">
+    <input class="qlproj" placeholder="project tag" style="flex:1 0 46%">
+    <input class="qlparent" placeholder="parent / orchestrator" style="flex:1 0 46%">`;
+  el.querySelector(".qlname").value = (q && q.name) || "";
+  el.querySelector(".qlside").value = pl.side === "wsl" ? "wsl" : "win";
+  el.querySelector(".qlgated").checked = !!pl.gated;
+  el.querySelector(".qlcwd").value = pl.cwd || "";
+  el.querySelector(".qlproj").value = pl.project || "";
+  el.querySelector(".qlparent").value = pl.parent || "";
+  el.querySelector(".rdel").onclick = () => el.remove();
+  return el;
+}
+
+function readQuickRows(ov) {
+  return [...ov.querySelectorAll("#qllist .qlrow")].map((el, i) => {
+    const v = c => el.querySelector(c).value.trim();
+    return {
+      id: el.dataset.id || ("ql-" + Date.now() + "-" + i),
+      name: v(".qlname") || "preset " + (i + 1),
+      payload: qlClean({
+        side: el.querySelector(".qlside").value,
+        cwd: v(".qlcwd"), project: v(".qlproj"), parent: v(".qlparent"),
+        model: v(".qlmodel"), effort: v(".qleffort"),
+        gated: el.querySelector(".qlgated").checked || "",
+        // preserved from the stored preset: the launcher capture path can set
+        // these off live lists and settings must not silently drop them
+        prompt: el.dataset.prompt || "",
+        forks: JSON.parse(el.dataset.forks || "[]"),
+        handoffs: JSON.parse(el.dataset.handoffs || "[]"),
+        report_boot: el.dataset.reportBoot === "false" ? false : "",
+      }),
+    };
+  // a preset with no name and nothing set is an add-then-cancel leftover
+  }).filter(q => q.name || Object.keys(q.payload).length > 1);
+}
+
+// The ONE spawn path. A one-tap preset and a hand-filled Launch must not
+// drift: the booting card, its bridge-aware waiting state and the
+// pinned-codename watch all hang off exactly this.
+async function doSpawn(payload) {
+  const side = payload.side || "win";
+  spawnWatch = { side, cwd: payload.cwd || "", until: Date.now() + 180000,
+                 parent: payload.parent && payload.parent !== "chris" ? payload.parent : "",
+                 sids: Object.fromEntries(roster.map(t =>
+                   [t.side + ":" + t.title, t.session_id || ""])) };
+  let resp;
+  try {
+    const r = await fetch("/api/spawn", { method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload) });
+    resp = await r.json();
+    if (!r.ok || resp.ok === false)
+      throw new Error(resp.detail || ("spawn refused (" + r.status + ")"));
+  } catch (e) {
+    // A spawn that fails has to SAY so. Without this the launcher just sat
+    // there with a dead button and no message — indistinguishable from a hang,
+    // and the booting card would have waited three minutes for a session that
+    // was never started. Found 2026-08-19 by a real spawn against a shadow hub
+    // that could not launch a terminal.
+    spawnWatch = null;
+    const bar = document.querySelector("#pop .popbar");
+    if (bar && !document.querySelector(".spawnerr"))
+      bar.insertAdjacentHTML("afterend",
+        `<div class="hint spawnerr">spawn failed — ${String(e.message).slice(0, 160)
+          .replace(/</g, "&lt;")}</div>`);
+    document.querySelectorAll("#pop .qlbtn").forEach(b => { b.disabled = false; });
+    renderList();
+    return null;
+  }
+  if (resp.title && spawnWatch) {   // pinned codename: watch for IT exactly
+    spawnWatch.expectTitle = resp.title;
+    spawnWatch.prevSid = "";
+  }
+  closePop();
+  renderList();
+  return resp;
+}
 document.getElementById("spawn").onclick = async ev => {
   if (!wsCache) wsCache = await (await fetch("/api/workspaces")).json();
   let meta = { projects: [], handoffs: [], forks: [] };
@@ -1069,6 +1253,7 @@ document.getElementById("spawn").onclick = async ev => {
   let side = saved.side === "wsl" ? "wsl" : "win";
   const p = showPop(ev.clientX, ev.clientY,
     `<div class="title">new session</div>
+     <div class="row" id="sp-quick"></div>
      <div class="row" id="sp-sides">
        <button data-side="win" class="on">Windows</button>
        <button data-side="wsl">WSL</button>
@@ -1092,7 +1277,8 @@ document.getElementById("spawn").onclick = async ev => {
      <div class="row spr"><input id="sp-ff" class="spsel flt" placeholder="filter forks…"><select id="sp-fork" class="spsel" multiple size="4" title="ctrl/tap-select several — each becomes a FORK line"></select></div>
      <div class="row spr"><textarea id="sp-prompt" class="spsel" rows="5"
        placeholder="initial prompt (optional — apostrophes and any punctuation are safe)"></textarea><button id="sp-mic" class="spmic" title="dictate into the prompt">🎤</button></div>
-     <div class="row spr"><button id="sp-launch" style="flex:1">Launch</button><button id="sp-clear" title="reset the form">Clear</button></div>
+     <div class="row spr popact"><button id="sp-launch" style="flex:1">Launch</button><button id="sp-clear" title="reset the form">Clear</button>
+       <button id="sp-save-preset" title="save this form as a one-tap quick launch preset">Save preset</button></div>
      <div class="hint">bypass permissions, folder pre-trusted — zero prompts · project / parent / handoff / fork become the boot briefing · the new thread appears and selects itself here</div>`);
   const opt = (v, label) => `<option value="${(v || "").replace(/"/g, "&quot;")}">${label}</option>`;
   const fillSel = (id, none, rows, q) => {
@@ -1145,6 +1331,51 @@ document.getElementById("spawn").onclick = async ev => {
     ff: p.querySelector("#sp-ff").value,
     fork: [...p.querySelector("#sp-fork").selectedOptions].map(o => o.value),
     prompt: p.querySelector("#sp-prompt").value }));
+  // the /api/spawn body this form describes — one reader, so Launch and
+  // "save as preset" can never disagree about what the form means
+  const formPayload = () => ({
+    side, cwd: p.querySelector("#sp-ws").value,
+    gated: p.querySelector("#sp-gated").checked,
+    prompt: p.querySelector("#sp-prompt").value,
+    parent: p.querySelector("#sp-parent").value,
+    model: p.querySelector("#sp-model").value,
+    effort: p.querySelector("#sp-effort").value,
+    report_boot: p.querySelector("#sp-boot-ping").checked,
+    project: p.querySelector("#sp-proj").value,
+    handoffs: [...p.querySelector("#sp-hand").selectedOptions].map(o => o.value),
+    forks: [...p.querySelector("#sp-fork").selectedOptions].map(o => o.value),
+  });
+  // one tap per preset, straight to /api/spawn — no second dialog
+  const drawQuick = () => {
+    const row = p.querySelector("#sp-quick");
+    const presets = qlAll();
+    row.innerHTML = presets.length
+      ? `<div class="qlab">quick launch</div>` + presets.map((q, i) =>
+          `<button class="qlbtn" data-i="${i}">${(q.name || "preset").replace(/</g, "&lt;")}</button>`).join("")
+      : `<div class="qlab">quick launch — add one in settings, or fill this form and press Save preset</div>`;
+    row.querySelectorAll(".qlbtn").forEach(b => b.onclick = async () => {
+      b.disabled = true;
+      await doSpawn(qlClean(presets[+b.dataset.i].payload || {}));
+    });
+  };
+  drawQuick();
+  p.querySelector("#sp-save-preset").onclick = () => {
+    const cur = formPayload();
+    showPop(0, 0, `<div class="title">save quick launch preset</div>
+      <div class="row spr"><input id="qlname" class="spsel" placeholder="name it — e.g. wsl hub builder"></div>
+      <div class="hint">captures the launcher form as it stands: ${cur.side}${cur.cwd ? " · " + cur.cwd : ""}${cur.project ? " · " + cur.project : ""}${cur.gated ? " · gated" : ""}</div>
+      <div class="row spr popact"><button id="qlok" style="flex:1">Save preset</button></div>`);
+    const nameEl = document.getElementById("qlname");
+    nameEl.focus();
+    document.getElementById("qlok").onclick = async () => {
+      const name = nameEl.value.trim();
+      if (!name) { nameEl.style.borderColor = "var(--accent)"; nameEl.focus(); return; }
+      hubCfg.quick_launch = [...qlAll(),
+        { id: "ql-" + Date.now(), name, payload: qlClean(cur) }];
+      await qlSave();
+      closePop();
+    };
+  };
   ["#sp-pf", "#sp-hf", "#sp-ff"].forEach(id => p.querySelector(id).oninput = fillLists);
   p.querySelector("#sp-ws").addEventListener("change", loadMeta);
   p.querySelectorAll("#sp-sides button").forEach(b => b.onclick = () => {
@@ -1233,30 +1464,9 @@ document.getElementById("spawn").onclick = async ev => {
       ps.focus();
       return;
     }
-    // watch the roster: the first thread on this side we have not seen yet
-    // (cwd-matched when the entry carries one) becomes the selected thread
-    spawnWatch = { side, cwd, until: Date.now() + 180000,
-                   parent: parent && parent !== "chris" ? parent : "",
-                   sids: Object.fromEntries(roster.map(t =>
-                     [t.side + ":" + t.title, t.session_id || ""])) };
-    const resp = await (await fetch("/api/spawn", { method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({ side, cwd, gated,
-        prompt: p.querySelector("#sp-prompt").value,
-        parent,
-        model: p.querySelector("#sp-model").value,
-        effort: p.querySelector("#sp-effort").value,
-        report_boot: p.querySelector("#sp-boot-ping").checked,
-        project: p.querySelector("#sp-proj").value,
-        handoffs: [...p.querySelector("#sp-hand").selectedOptions].map(o => o.value),
-        forks: [...p.querySelector("#sp-fork").selectedOptions].map(o => o.value) }) })).json();
-    if (resp.title && spawnWatch) {   // pinned codename: watch for IT exactly
-      spawnWatch.expectTitle = resp.title;
-      spawnWatch.prevSid = "";
-    }
+    // through doSpawn, the single path a preset tap uses too
+    await doSpawn(formPayload());
     localStorage.removeItem(FKEY);
-    closePop();
-    renderList();
   };
 };
 document.getElementById("tab-term").onclick = e => switchTab("term", e.target);
@@ -1890,6 +2100,13 @@ document.getElementById("gear").onclick = async () => {
     <div class="srow"><label>effort</label><select id="s-effort">
       ${["low", "medium", "high", "xhigh", "max"].map(e => `<option ${(s.spawn_effort || "xhigh") === e ? "selected" : ""}>${e}</option>`).join("")}
     </select></div>
+    <h3>quick launch — one-tap terminals</h3>
+    <div class="hint">Each preset becomes a button at the top of the ＋ launcher.
+      One tap spawns it with exactly these settings, no dialog. To capture a
+      preset from live project / handoff / fork lists instead, fill the launcher
+      in and press <b>Save preset</b> there.</div>
+    <div id="qllist"></div>
+    <div class="srow"><button id="qladd">Add preset</button></div>
     <div id="audiosec"></div>
     <h3>spoken word fixes — applied to every transcript</h3>
     <div class="hint">what the model hears on the left, what to send on the right.
@@ -1904,6 +2121,30 @@ document.getElementById("gear").onclick = async () => {
     </div>
     <div id="repmsg" class="hint"></div>`;
   ov.querySelector(".save").disabled = false;
+
+  // quick launch rows
+  const qlHost = ov.querySelector("#qllist");
+  const qlAdd = q => {
+    const node = qlRowNode(q);
+    const pl = (q && q.payload) || {};
+    if (q && q.id) node.dataset.id = q.id;
+    // round-tripped untouched through the settings editor, which has no
+    // widgets for them — dropping them here would quietly gut a preset
+    // captured from the launcher
+    node.dataset.prompt = pl.prompt || "";
+    node.dataset.forks = JSON.stringify(pl.forks || []);
+    node.dataset.handoffs = JSON.stringify(pl.handoffs || []);
+    node.dataset.reportBoot = String(pl.report_boot !== false);
+    qlHost.appendChild(node);
+  };
+  qlAll().forEach(qlAdd);
+  if (!qlAll().length)
+    qlHost.innerHTML = '<div class="hint">none yet — add one, or capture the launcher form with Save preset.</div>';
+  ov.querySelector("#qladd").onclick = () => {
+    const hint = qlHost.querySelector(".hint");
+    if (hint) hint.remove();
+    qlAdd(null);
+  };
 
   // rebuilt from the array on every change so row indices never drift out of
   // step with the data behind them
@@ -2086,14 +2327,20 @@ document.getElementById("gear").onclick = async () => {
     const sounds = {};
     ov.querySelectorAll("input[data-k]").forEach(cb => { sounds[cb.dataset.k] = cb.checked; });
     ov.querySelectorAll("select[data-w]").forEach(se => { sounds[se.dataset.w + "_wav"] = se.value; });
-    hubCfg = { sounds,
+    // SPREAD, do not replace. This literal names eight keys; the object also
+    // carries card_order, cmd_favs, hidden, spawn_pinned and quick_launch, and
+    // rebuilding it from scratch silently threw all of those away every time
+    // Save was pressed. /api/settings stores whatever it is handed, so the
+    // wipe persisted.
+    hubCfg = { ...hubCfg, sounds,
       hide_inactive: ov.querySelector("#s-hide").checked,
       voice_autosend: ov.querySelector("#s-voice").checked,
       tts_on: ov.querySelector("#s-tts").checked,
       tts_voice: ov.querySelector("#s-ttsvoice").value,
       tts_thread: ov.querySelector("#s-ttsthread").value,
       spawn_model: ov.querySelector("#s-model").value,
-      spawn_effort: ov.querySelector("#s-effort").value };
+      spawn_effort: ov.querySelector("#s-effort").value,
+      quick_launch: readQuickRows(ov) };
     await fetch("/api/settings", { method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify(hubCfg) });
