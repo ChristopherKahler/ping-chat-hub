@@ -140,7 +140,10 @@ def test_the_daemon_starts_the_warm_before_it_binds():
     src = Path(daemon.__file__).read_text(encoding="utf-8")
     body = src[src.index("def main()"):]
     assert "start_voice_warm()" in body
-    assert body.index("start_voice_warm()") < body.index("ThreadingHTTPServer(")
+    # `srv = ` rather than the class name: the server class became _Server when
+    # the single-instance guard added an exclusive-bind posture, and this test
+    # is about ORDER, not about which class does the binding
+    assert body.index("start_voice_warm()") < body.index("srv = ")
 
 
 def test_the_settings_panel_opens_before_it_has_data():

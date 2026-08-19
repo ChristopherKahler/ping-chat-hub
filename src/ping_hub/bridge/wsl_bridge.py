@@ -54,6 +54,13 @@ TICK_SECS = 5
 KEEPALIVE_TICKS = 12        # x TICK_SECS = re-register once a minute
 HUB_TITLE = str(_C.get("standing_title") or "chris")
 
+# Process identity. `seq` restarts at zero in every fresh bridge, so a hub
+# that carries its cursor across the reconnect filters every new event as
+# already-seen — silently, forever. The epoch lets the hub notice it is
+# talking to a NEW bridge and start over. Measured 2026-08-19: 24 minutes of
+# frozen journaling that looked perfectly healthy from outside.
+EPOCH = time.time()
+
 events: list[dict] = []          # ring of {seq, kind, ...}
 seq_lock = threading.Lock()
 cond = threading.Condition()
@@ -332,7 +339,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         u = urlparse(self.path)
         if u.path == "/snapshot":
-            self._json(_snapshot)
+            self._json({**_snapshot, "epoch": EPOCH})
         elif u.path == "/events":
             cursor = int((parse_qs(u.query).get("cursor") or ["0"])[0])
             deadline = time.time() + 25
@@ -342,7 +349,8 @@ class Handler(BaseHTTPRequestHandler):
                     if fresh or time.time() >= deadline:
                         break
                     cond.wait(timeout=max(0.1, deadline - time.time()))
-            self._json({"events": fresh, "cursor": fresh[-1]["seq"] if fresh else cursor})
+            self._json({"events": fresh, "epoch": EPOCH,
+                        "cursor": fresh[-1]["seq"] if fresh else cursor})
         else:
             self._json({"error": "not found"}, 404)
 

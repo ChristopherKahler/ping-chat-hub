@@ -1053,7 +1053,90 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": "not found"}, 404)
 
 
+class SingleInstanceError(RuntimeError):
+    """The port already has a listener. Named so the refusal is catchable and
+    testable rather than a bare exit."""
+
+
+def port_listening(port: int, host: str = "127.0.0.1", connect=None) -> bool:
+    """Is anything already serving this port?"""
+    import socket as _s
+    connect = connect or (lambda h, p: _s.create_connection((h, p), 0.6))
+    try:
+        connect(host, port).close()
+        return True
+    except (OSError, AttributeError):
+        return False
+
+
+def port_holder_pid(port: int, run=subprocess.run) -> str:
+    """Best effort: WHICH process holds it, for the error message.
+
+    Courtesy only — the refusal never depends on this succeeding. Naming the
+    pid is the difference between an operator killing the right process and
+    an operator guessing, which cost 45 minutes this morning.
+    """
+    cmd = (["netstat", "-ano"] if os.name == "nt"
+           else ["ss", "-ltnp"])
+    try:
+        r = run(cmd, capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    for line in (r.stdout or "").splitlines():
+        if f":{port} " not in line and f":{port}	" not in line:
+            continue
+        if os.name == "nt":
+            if "LISTENING" not in line:
+                continue
+            parts = line.split()
+            if parts and parts[-1].isdigit():
+                return parts[-1]
+        else:
+            m = re.search(r"pid=(\d+)", line)
+            if m:
+                return m.group(1)
+    return ""
+
+
+def guard_single_instance(port: int, listening=port_listening,
+                          holder=port_holder_pid) -> None:
+    """Refuse to start a second hub on a live port.
+
+    Windows does NOT refuse this by itself. `HTTPServer.allow_reuse_address`
+    is 1, which sets SO_REUSEADDR, and on Windows that does not mean "reuse a
+    TIME_WAIT port" — it means "share a live listener". On 2026-08-19 three
+    processes held 7799 simultaneously, split Chris's requests between them
+    for 45 minutes, and not one of them raised a single error. Two of them
+    were debug strays whose operator twice reported them dead because he read
+    a log instead of listing processes.
+    """
+    if not listening(port):
+        return
+    pid = holder(port)
+    raise SingleInstanceError(
+        f"port {port} already has a listener"
+        + (f" (pid {pid})" if pid else " (holder pid unknown)")
+        + ". Refusing to start a second hub: on Windows both would bind and "
+          "split requests silently. Stop that process first, or serve on a "
+          "different [hub] port.")
+
+
+class _Server(ThreadingHTTPServer):
+    """Exclusive bind. See guard_single_instance for why sharing is the bug."""
+
+    allow_reuse_address = False
+
+    def server_bind(self):
+        import socket as _s
+        if os.name == "nt" and hasattr(_s, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(_s.SOL_SOCKET, _s.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
 def main() -> None:
+    # BEFORE any state is touched: a second hub must not register titles,
+    # backfill, or start watchers against a store another hub already owns
+    guard_single_instance(PORT)
     # a shadow/test instance sets register_standing_title=false: two daemons
     # re-binding the same standing title churn its registration and both touch
     # its sentinel, which would move state under the live cockpit
@@ -1073,7 +1156,7 @@ def main() -> None:
     # tailnet-only (the serve is not funneled); LAN exposure is Chris's own
     # network.
     start_voice_warm()   # background; the bind below does not wait on it
-    srv = ThreadingHTTPServer((CFG.hub.bind, PORT), Handler)
+    srv = _Server((CFG.hub.bind, PORT), Handler)
     print(f"ping-chat-hub on http://127.0.0.1:{PORT}")
     srv.serve_forever()
 

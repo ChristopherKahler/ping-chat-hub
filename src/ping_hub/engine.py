@@ -63,6 +63,50 @@ def _read_json(path: Path) -> Any:
         return None
 
 
+# The window in which an echo and the watcher's copy of the SAME send are
+# plausibly the same delivery. Ten seconds: the watcher polls once a second and
+# the send itself is measured in seconds, so this is the real race width with
+# margin. Wider would start swallowing a message Chris deliberately repeated.
+ECHO_WINDOW = 10.0
+
+
+def echo_key(side: str, title: str, sender: str, summary: str) -> str:
+    """Weak identity for one outbound send, used at exactly ONE seam.
+
+    base mints the slug inside the ping file, so a send that has just shelled
+    out cannot know the id the watcher will later read — a strong dedup is
+    impossible across those two paths. This content hash covers only that seam;
+    everywhere the real id exists (watcher, replay, backfill) the slug is used
+    instead. Ruling 2026-08-19: a visible duplicate always beats a possible
+    drop, so a hash MISS appends and we live with the double.
+    """
+    import hashlib
+    raw = f"{side}|{title}|{sender}|{summary}"
+    return hashlib.sha1(raw.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def epoch_reset(known, seen, cursor: int) -> tuple:
+    """Decide the cursor when a bridge response arrives. Pure, so the rule is
+    provable without a socket.
+
+    Returns (cursor, epoch). A bridge is a fresh PROCESS after any restart and
+    its `seq` starts at zero, so a cursor carried across the reconnect filters
+    every new event as already-seen — permanently, and with no error anywhere.
+    Measured 2026-08-19: 24 minutes of frozen journaling while /snapshot served
+    happily, because roster and events fail independently and only one of them
+    is observable from outside.
+
+    An epoch-less response is an older deployed bridge: keep today's behaviour
+    rather than resetting on every poll, so a hub newer than its bridge is not
+    a new outage.
+    """
+    if seen is None:
+        return cursor, known
+    if known is not None and seen != known:
+        return 0, seen
+    return cursor, seen
+
+
 class _HealBudget:
     """How often the hub may try to restart a bridge it has found down.
 
@@ -125,6 +169,8 @@ class Engine:
                                    "detail": "not probed yet",
                                    "enabled": bool(CFG.wsl.enabled)}
         self._heal = _HealBudget()
+        # echo_key -> ts, for the echo-vs-watcher seam only (see echo_key)
+        self._echoes: dict[str, float] = {}
         # "side:title" -> every project that EVER touched the session (Chris
         # spec 2026-08-17: append on change, never remove — filter keywords)
         self._projects: dict[str, list] = _read_json(HUB_DIR / "projects.json") or {}
@@ -685,6 +731,12 @@ class Engine:
                 # caught exactly that double).
                 if slug in self._seen.get(f"{self.side}:{tkey}", set()):
                     continue
+                # our own echo already journaled this send seconds ago; the
+                # slug cannot match it because base minted the slug after we
+                # had already returned
+                if direction == "out" and self._echo_recent(
+                        echo_key(self.side, tkey, src, ping.get("summary", ""))):
+                    continue
                 self.append(tkey, {
                     "slug": ping.get("slug", slug),
                     "dir": direction,
@@ -789,14 +841,40 @@ class Engine:
         self._emit({"event": "escalation", "id": eid})
         return True, detail
 
+    def _echo_recent(self, key: str, now: float | None = None) -> bool:
+        """Did WE just journal this same outbound? Prunes as it goes."""
+        now = time.time() if now is None else now
+        with self.lock:
+            for k, ts in list(self._echoes.items()):
+                if now - ts > ECHO_WINDOW:
+                    del self._echoes[k]
+            return key in self._echoes
+
+    def _echo_out(self, title: str, msg: str, side: str, sender: str) -> None:
+        """Journal our own outbound AT SEND TIME and push it to the open thread.
+
+        Before this, an outbound entry only existed if the watcher happened to
+        see the inbox file before the receiving session consumed it — a race the
+        hub usually loses — so Chris's own messages appeared only after a hub
+        restart's backfill, wearing a boot timestamp instead of a send time.
+        """
+        with self.lock:
+            self._echoes[echo_key(side, title, sender, msg)] = time.time()
+        self.append(title, {
+            "slug": "", "dir": "out", "peer": False, "from": sender,
+            "to": title, "kind": "ping", "summary": msg,
+            "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "echo": True,
+        }, side=side)
+
     # ── send ─────────────────────────────────────────────────────────────
     def send(self, title: str, msg: str, side: str = "win",
              sender: str | None = None) -> tuple[bool, str]:
         """Ping a session through the target side's own base binary (win:
         directly; wsl: via the bridge). sender defaults to chris (the hub IS
         chris); system notices pass sender='hub' so they stop wearing Chris's
-        name (his catch, 2026-08-17). The watcher on that side journals the
-        inbox file it creates, so no double-entry here."""
+        name (his catch, 2026-08-17). On success it journals its own entry AT
+        SEND TIME and emits it, so the open thread renders immediately; the
+        watcher's later copy of the same ping is suppressed by echo_key."""
         import subprocess
         sender = sender or HUB_TITLE
         if side == "wsl":
@@ -813,7 +891,10 @@ class Engine:
                 )
                 with urllib.request.urlopen(req, timeout=20) as r:
                     body = json.loads(r.read())
-                return bool(body.get("ok")), body.get("detail", "")
+                ok = bool(body.get("ok"))
+                if ok:
+                    self._echo_out(title, msg, side, sender)
+                return ok, body.get("detail", "")
             except OSError as e:
                 return False, f"wsl bridge unreachable: {e}"
         try:
@@ -827,7 +908,10 @@ class Engine:
                 # a slow one.
                 capture_output=True, text=True, timeout=60, encoding="utf-8", errors="replace",
             )
-            return r.returncode == 0, (r.stdout + r.stderr).strip()
+            ok = r.returncode == 0
+            if ok:
+                self._echo_out(title, msg, side, sender)
+            return ok, (r.stdout + r.stderr).strip()
         except (OSError, subprocess.TimeoutExpired) as e:
             return False, str(e)
 
@@ -889,6 +973,7 @@ class Engine:
     def _bridge_loop(self) -> None:
         import urllib.request
         cursor = 0
+        epoch = None
         primed = False
         host = ""
         while not self._stop.is_set():
@@ -901,7 +986,9 @@ class Engine:
                     with urllib.request.urlopen(
                         f"http://{host}:{BRIDGE_PORT}/snapshot", timeout=5
                     ) as r:
-                        self._bridge_roster(json.loads(r.read()))
+                        snap = json.loads(r.read())
+                    cursor, epoch = epoch_reset(epoch, snap.get("epoch"), cursor)
+                    self._bridge_roster(snap)
                     primed = True
                     self._bridge_mark(True, f"{host}:{BRIDGE_PORT}")
                     self._heal.reset()
@@ -909,6 +996,15 @@ class Engine:
                     f"http://{host}:{BRIDGE_PORT}/events?cursor={cursor}", timeout=35
                 ) as r:
                     body = json.loads(r.read())
+                fresh_cursor, new_epoch = epoch_reset(epoch, body.get("epoch"), cursor)
+                if new_epoch != epoch and epoch is not None:
+                    # a different bridge process answered: this response was
+                    # filtered against a cursor that means nothing to it, so
+                    # discard it, re-prime, and poll again from zero
+                    print(f"bridge restarted: cursor reset (was {cursor})", flush=True)
+                    cursor, epoch, primed = 0, new_epoch, False
+                    continue
+                epoch = new_epoch
                 cursor = body.get("cursor", cursor)
                 self._bridge_mark(True, f"{host}:{BRIDGE_PORT}")
                 self._heal.reset()
@@ -984,6 +1080,9 @@ class Engine:
         else:
             tkey, direction, peer = inbox, "in", True
         if slug and slug in self._seen.get(f"wsl:{tkey}", set()):
+            return
+        if direction == "out" and self._echo_recent(
+                echo_key("wsl", tkey, src, ping.get("summary", ""))):
             return
         self.append(tkey, {
             "slug": slug,

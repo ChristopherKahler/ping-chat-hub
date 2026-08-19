@@ -1874,6 +1874,30 @@ addEventListener("resize", growBox);
 })();
 
 const es = new EventSource("/api/events");
+// EventSource reconnects itself, but that is only half the story: messages
+// that arrived while the stream was down were never delivered to THIS page and
+// never will be, because addMsg only ever fires from onmessage. The roster
+// keeps refreshing on its 5s poll, so the board looks alive while the open
+// thread quietly stops receiving anything — until Chris reselects the card or
+// reopens the app, which is exactly what he reported. So a reconnect has to
+// re-read the thread, not just resume the feed.
+let streamDown = false;
+es.onerror = () => {
+  if (streamDown) return;
+  streamDown = true;
+  const h = document.getElementById("hinfo");
+  if (h && !document.getElementById("streamdown"))
+    h.insertAdjacentHTML("afterbegin",
+      '<div id="streamdown" class="badge escb">live feed down — reconnecting</div>');
+};
+es.onopen = () => {
+  const el = document.getElementById("streamdown");
+  if (el) el.remove();
+  if (!streamDown) return;      // first connect: nothing was missed
+  streamDown = false;
+  loadRoster();
+  if (sel) loadThread();        // fill the gap the dead stream left behind
+};
 es.onmessage = ev => {
   const d = JSON.parse(ev.data);
   if (d.event === "roster") loadRoster();
