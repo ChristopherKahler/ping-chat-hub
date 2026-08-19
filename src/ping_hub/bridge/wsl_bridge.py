@@ -13,8 +13,9 @@ long-polls /events, so delivery is push-shaped over a pull transport.
   GET  /events?cursor=N   events after N; holds up to 25s when empty
   POST /send              {title, msg} -> base relay ping --from chris (WSL binary)
 
-Boot registers the standing `chris` title WSL-side and keeps chris's sentinel
-fresh — the hub is chris's monitor on both sides.
+Registers the standing `chris` title WSL-side and keeps BOTH halves fresh — the
+registration on a cadence and the sentinel every tick. The hub is chris's
+monitor on both sides.
 """
 from __future__ import annotations
 
@@ -49,6 +50,8 @@ INBOX = BASE / "relay-inbox"
 SESSIONS = BASE / "sessions.json"
 PORT = int(_C.get("port") or 7798)   # must match the hub's [wsl].bridge_port
 WATCH_STALE_SECS = 15
+TICK_SECS = 5
+KEEPALIVE_TICKS = 12        # x TICK_SECS = re-register once a minute
 HUB_TITLE = str(_C.get("standing_title") or "chris")
 
 events: list[dict] = []          # ring of {seq, kind, ...}
@@ -262,19 +265,56 @@ def watcher() -> None:
         time.sleep(1)
 
 
-def chris_keeper() -> None:
-    subprocess.run(
-        [BASE_BIN, "relay", "register", "--as", HUB_TITLE, "--session", "hub-chris-standing-wsl"],
-        capture_output=True, timeout=15,
-    )
+def register_chris(run=subprocess.run) -> bool:
+    """Refresh the standing title. Returns success, and never raises.
+
+    The registry's live/DEAD state reads the REGISTRATION timestamp, not the
+    sentinel. Registering only at boot therefore let `chris` decay to DEAD
+    about half an hour after every bridge start, while the bridge was up and
+    serving — and every `base relay ping --to chris` began warning that he may
+    be dead. Measured 2026-08-19: his last_heartbeat matched the unit's start
+    timestamp to the second, half an hour later.
+
+    It never raises because it shares a daemon thread with the sentinel touch.
+    The original call had no handler at all, so a slow or missing `base` binary
+    at boot killed BOTH halves at once, with nothing printed.
+    """
+    try:
+        r = run([BASE_BIN, "relay", "register", "--as", HUB_TITLE,
+                 "--session", "hub-chris-standing-wsl"],
+                capture_output=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return getattr(r, "returncode", 1) == 0
+
+
+def chris_keeper(run=subprocess.run, sleep=time.sleep, stop=None) -> None:
+    """Keep the standing title alive: re-register on a cadence, touch the
+    sentinel every tick.
+
+    Ticks are COUNTED rather than clocks read, so the cadence is provable
+    without injecting a clock or sleeping for real.
+    """
     d = INBOX / HUB_TITLE
-    while True:
+    tick = 0
+    healthy = True
+    while not (stop and stop(tick)):
+        if tick % KEEPALIVE_TICKS == 0:
+            fresh = register_chris(run)
+            # One line each way and nothing in between: silence IS the healthy
+            # state. A keeper that has been failing for an hour leaving no
+            # trace is the exact shape of the outage this was written for.
+            if fresh != healthy:
+                print(f"chris keeper: registration "
+                      f"{'recovered' if fresh else 'FAILING'}", flush=True)
+                healthy = fresh
         try:
             d.mkdir(parents=True, exist_ok=True)
             (d / ".watching").touch()
         except OSError:
             pass
-        time.sleep(5)
+        tick += 1
+        sleep(TICK_SECS)
 
 
 class Handler(BaseHTTPRequestHandler):
