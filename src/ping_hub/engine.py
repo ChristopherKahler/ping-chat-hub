@@ -767,6 +767,16 @@ class Engine:
         except (OSError, subprocess.TimeoutExpired) as e:
             return False, str(e)
 
+    def channel_of(self, title: str, side: str) -> str:
+        """The slot digit bound to one codename, or "".
+
+        Needed because the roster cannot answer it for the standing title: the
+        roster skips that title on purpose, so anything reading a channel off
+        the roster reads nothing for the hub's own inbox and reports an
+        unbound channel that is in fact bound.
+        """
+        return self._slots().get(f"{side}:{title}", "")
+
     def refresh_roster(self) -> None:
         reg = _read_json(SESSIONS) or {}
         squads = self._squad_titles()

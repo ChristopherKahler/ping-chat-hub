@@ -559,7 +559,8 @@ class Handler(BaseHTTPRequestHandler):
             # the standing relay title travels with the notes: the card
             # binds a channel to it, and a channel is bound by NAME
             self._json({"notes": inbox.read(CFG, max(1, min(limit, 5000))),
-                        "title": HUB_TITLE, "side": "win"})
+                        "title": HUB_TITLE, "side": "win",
+                        "channel": engine.channel_of(HUB_TITLE, "win")})
         elif u.path == "/api/desktop-stt":
             from ping_hub import desktop_stt
             self._json(desktop_stt.status(CFG))

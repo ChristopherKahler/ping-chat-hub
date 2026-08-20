@@ -2167,11 +2167,10 @@ async function refreshInboxCount() {
     const doc = await (await fetch("/api/inbox?limit=5000")).json();
     inboxTitle = doc.title || inboxTitle;
     const n = (doc.notes || []).length;
-    // the bound channel comes from the roster, which is where every other
-    // channel badge on this page comes from
-    const mine = roster.find(r => r.title === inboxTitle);
-    const ch = mine && mine.channel !== "" && mine.channel !== undefined
-      ? "ch " + mine.channel : "";
+    // From the SERVER, not the roster: the roster deliberately omits the
+    // standing title, so looking the channel up there always found nothing and
+    // a successful bind looked like a failed one.
+    const ch = doc.channel ? "ch " + doc.channel : "";
     el.textContent = [ch, n ? n + " notes" : ""].filter(Boolean).join(" \u00b7 ");
     const cb = document.getElementById("inboxchan");
     if (cb) cb.textContent = ch || "ch +";
