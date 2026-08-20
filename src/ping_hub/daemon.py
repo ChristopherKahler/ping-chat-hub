@@ -551,6 +551,15 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/desktop-stt":
             from ping_hub import desktop_stt
             self._json(desktop_stt.status(CFG))
+        elif u.path == "/api/update":
+            # answered from a 15-minute cache: every open tab and every phone
+            # on the LAN polls this, and an unauthenticated GitHub caller gets
+            # 60 requests an hour to share between all of them
+            from ping_hub import release
+            q = parse_qs(u.query)
+            if (q.get("refresh") or [""])[0] == "1":
+                release.refresh(CFG)
+            self._json(release.status(CFG))
         elif u.path == "/api/desktop-stt/history":
             from ping_hub import desktop_stt
             q = parse_qs(u.query)
@@ -1034,6 +1043,11 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/desktop-stt/restart":
             from ping_hub import desktop_stt
             self._json(desktop_stt.restart(CFG))
+        elif u.path == "/api/update":
+            # returns as soon as the detached updater is running. It cannot
+            # report the outcome: this process is one of the things it kills.
+            from ping_hub import release
+            self._json(release.apply(CFG))
         elif u.path == "/api/audio":
             from ping_hub import cxptt
             out = cxptt.set_device(CFG, str(payload.get("id", "")),

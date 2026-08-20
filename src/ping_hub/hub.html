@@ -382,6 +382,20 @@
   #modal .hotkeybox { font-family: ui-monospace, Consolas, monospace;
                       letter-spacing: .5px; text-align: center; }
   #modal .hotkeybox.arming { border-color: var(--accent); color: var(--accent); }
+  /* Update badge: hidden until there IS one, so the header keeps its shape on
+     the overwhelming majority of loads. A badge that is always there is a
+     badge nobody reads. */
+  #updb { display: none; background: var(--accent2); color: #1d1812; border: none;
+          border-radius: 999px; padding: 3px 11px; font-size: 12px; font-weight: 600;
+          cursor: pointer; margin-left: 4px; flex: none; white-space: nowrap; }
+  #updb.show { display: inline-block; }
+  #modal .relnotes { max-height: 40vh; overflow-y: auto; white-space: pre-wrap;
+        word-break: break-word; background: var(--panel2); border: 1px solid var(--line);
+        border-radius: 8px; padding: 10px 12px; font-size: 13px; line-height: 1.5;
+        margin: 4px 0 2px; }
+  #modal .vrow { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap;
+                 margin: 2px 0 10px; font-size: 14px; }
+  #modal .vrow b { color: var(--accent); font-family: ui-monospace, Consolas, monospace; }
   #modal h3 { margin: 16px 0 8px; font-size: 14px; color: var(--dim);
               text-transform: uppercase; letter-spacing: 0.5px; }
   #modal .srow { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
@@ -635,7 +649,7 @@
   </div>
   <div id="divider" title="drag to resize"></div>
   <div id="main">
-    <div id="head"><button id="burger" title="threads">☰</button><span id="hinfo">ping hub</span><button id="clearb" title="clear or close this session">⟳</button><button id="gear" title="settings">⚙</button></div>
+    <div id="head"><button id="burger" title="threads">☰</button><span id="hinfo">ping hub</span><button id="clearb" title="clear or close this session">⟳</button><button id="gear" title="settings">⚙</button><button id="updb" title="an update is available">update</button></div>
     <div id="msgs"><div id="empty">select a thread — pings only, both directions</div></div>
     <div id="esc-list"></div>
     <button id="ttsstop" title="stop speech / skip to next">⏹</button>
@@ -2830,6 +2844,116 @@ document.getElementById("gear").onclick = async () => {
 };
 
 // ── settings tabs ───────────────────────────────────────────────────────────
+// ── update: poll, badge, one button ────────────────────────────────────────────
+// The server answers /api/update from a 15-minute cache, so polling every ten
+// minutes costs nothing and a machine left open overnight still notices by
+// morning. Two open tabs and a phone do not multiply the GitHub traffic.
+let updState = null;
+
+async function pollUpdate(refresh) {
+  try {
+    updState = await (await fetch("/api/update" + (refresh ? "?refresh=1" : ""))).json();
+  } catch (e) { return null; }
+  const b = document.getElementById("updb");
+  if (b) {
+    b.classList.toggle("show", !!updState.available);
+    if (updState.available) b.textContent = "update → " + updState.version;
+  }
+  return updState;
+}
+
+function updateModal() {
+  const s = updState || {};
+  const esc = t => String(t == null ? "" : t)
+    .replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  const ov = document.createElement("div");
+  ov.id = "overlay";
+  ov.innerHTML = `<div id="modal">
+    <h2>update</h2>
+    <div class="vrow">running <b>${esc(s.installed)}</b>
+      ${s.available ? `→ available <b>${esc(s.version)}</b>` : ""}</div>
+    ${s.checked === false
+      ? `<div class="hint warn">${esc(s.detail || "could not check for updates")}</div>`
+      : (s.available
+        ? `<div class="hint">This installs ${esc(s.name)} and restarts the hub. It
+             takes a few seconds, and the page reloads itself once the new version
+             answers.</div>
+           <div class="relnotes">${esc(s.notes) || "no release notes"}</div>`
+        : `<div class="hint">You are on the newest release.</div>`)}
+    <div id="updmsg" class="hint"></div>
+    <div class="actions">
+      <button class="cancel">Close</button>
+      <button id="updchk">Check again</button>
+      ${s.available ? '<button class="save" id="updgo">Update and reload</button>' : ""}
+    </div>
+  </div>`;
+  document.body.appendChild(ov);
+  ov.onclick = e => { if (e.target === ov) ov.remove(); };
+  ov.querySelector(".cancel").onclick = () => ov.remove();
+  ov.querySelector("#updchk").onclick = async e => {
+    e.target.disabled = true;
+    e.target.textContent = "checking…";
+    await pollUpdate(true);
+    ov.remove();
+    updateModal();
+  };
+  const go = ov.querySelector("#updgo");
+  if (go) go.onclick = async () => {
+    go.disabled = true;
+    ov.querySelector("#updchk").disabled = true;
+    const msg = ov.querySelector("#updmsg");
+    go.textContent = "updating…";
+    // Read the running version HERE rather than trusting pageVersion, which is
+    // null until the shipped-version watch has ticked once. A null baseline
+    // makes the very first poll below look like a finished restart.
+    let was = null;
+    try {
+      was = (await (await fetch("/api/version", { cache: "no-store" })).json()).version;
+    } catch (e) { was = null; }
+    let out;
+    try {
+      out = await (await fetch("/api/update", { method: "POST" })).json();
+    } catch (e) { out = { ok: false, detail: e.message }; }
+    if (!out.ok) {
+      msg.textContent = out.detail || "could not start the update";
+      msg.className = "hint warn";
+      go.disabled = false;
+      go.textContent = "Update and reload";
+      return;
+    }
+    msg.textContent = "installing, then restarting the hub…";
+    msg.className = "hint";
+    // The server is about to be killed, so a failed fetch here is EXPECTED and
+    // must not read as an error. Success is the version coming back CHANGED;
+    // failure is the updater's own result file saying why it did not.
+    for (let i = 0; i < 150; i++) {            // ~5 minutes
+      await new Promise(r => setTimeout(r, 2000));
+      try {
+        const v = await (await fetch("/api/version", { cache: "no-store" })).json();
+        if (v.version && was && v.version !== was) { location.reload(); return; }
+      } catch (e) { /* down, as expected */ }
+      try {
+        const st = await (await fetch("/api/update", { cache: "no-store" })).json();
+        const r = st.result || {};
+        if (r.state === "failed") {
+          msg.textContent = `update failed at ${r.step || "?"}: ${r.detail || ""}`;
+          msg.className = "hint warn";
+          go.disabled = false;
+          go.textContent = "Try again";
+          return;
+        }
+        if (r.state === "done" && !st.available) { location.reload(); return; }
+      } catch (e) { /* down, as expected */ }
+    }
+    msg.textContent = "the hub did not come back within five minutes ─ check its log";
+    msg.className = "hint warn";
+  };
+}
+
+document.getElementById("updb").onclick = updateModal;
+pollUpdate(false);
+setInterval(() => pollUpdate(false), 600000);
+
 function wireSettingsTabs(ov) {
   const btns = [...ov.querySelectorAll(".stabs button")];
   const panels = [...ov.querySelectorAll(".stab")];

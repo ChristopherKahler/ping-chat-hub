@@ -33,7 +33,9 @@ claude_chat = ["chat.html"]
 # ptt/*.py are DATA, not modules: they are standalone scripts with hyphens in
 # their names, run by the launcher the installer writes. packages.find would
 # never pick them up on its own.
-ping_hub = ["hub.html", "assets/*", "ptt/*.py"]
+# updater.py.txt is DATA for the same reason: it is a standalone script
+# run detached, deliberately not importable as part of this package
+ping_hub = ["hub.html", "assets/*", "ptt/*.py", "updater.py.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

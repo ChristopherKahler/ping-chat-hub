@@ -1,0 +1,53 @@
+"""Detached hub updater. Written by ping_hub.release; runs from a COPY.
+
+pip replaces ping_hub on disk halfway through this, and step 3 kills the very
+process that spawned it, so this file must not live inside either.
+"""
+import json, os, subprocess, sys, time
+
+PY, SOURCE, TASK, RESULT = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+HIDE = 0x08000000 if os.name == "nt" else 0
+
+
+def write(**doc):
+    doc["at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    tmp = RESULT + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, indent=1)
+    for _ in range(6):
+        try:
+            os.replace(tmp, RESULT)
+            return
+        except OSError:
+            time.sleep(0.1)
+
+
+def run(cmd, timeout=600):
+    return subprocess.run(cmd, capture_output=True, text=True,
+                          timeout=timeout, creationflags=HIDE)
+
+
+write(state="installing", source=SOURCE)
+time.sleep(1.0)          # let the HTTP response that asked for this flush
+
+r = run([PY, "-m", "pip", "install", "--upgrade", SOURCE])
+if r.returncode != 0:
+    tail = ((r.stderr or "") + (r.stdout or "")).strip().splitlines()[-6:]
+    write(state="failed", step="pip", detail="\n".join(tail) or "pip failed")
+    sys.exit(1)
+
+write(state="restarting")
+# End the task, then make sure nothing is left holding the port. schtasks /end
+# only signals the task's own tree, and the hub re-execs into a second process.
+run(["schtasks", "/end", "/tn", TASK], timeout=60)
+time.sleep(1.5)
+ps = ("Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "
+      "'*ping_hub.cli*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }")
+run(["powershell", "-NoProfile", "-Command", ps], timeout=60)
+time.sleep(1.0)
+r = run(["schtasks", "/run", "/tn", TASK], timeout=60)
+if r.returncode != 0:
+    write(state="failed", step="restart",
+          detail=((r.stderr or "") + (r.stdout or "")).strip()[:400])
+    sys.exit(1)
+write(state="done")
