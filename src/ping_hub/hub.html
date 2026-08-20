@@ -384,6 +384,21 @@
   #modal .hotkeybox.arming { border-color: var(--accent); color: var(--accent); }
   /* the inbox: notes, not messages. No speech-bubble alignment, because there
      is nobody on the other side of them. */
+  /* The inbox card. Deliberately smaller than a session card: it is a place,
+     not a session, and giving it the same weight would make the roster read as
+     though a terminal called "inbox" existed. */
+  #inboxcard { display: flex; align-items: center; gap: 8px; cursor: pointer;
+        padding: 8px 12px; margin: 0; background: var(--panel);
+        border-bottom: 1px solid var(--line); user-select: none; }
+  #inboxcard:hover { background: var(--panel2); }
+  #inboxcard.on { background: var(--panel2); border-left: 3px solid var(--accent);
+                  padding-left: 9px; }
+  #inboxcard .ilabel { flex: 1; min-width: 0; font-size: 14px; color: var(--accent); }
+  #inboxcard .icount { font-size: 11px; color: var(--dim); flex: none; }
+  #inboxcard .imic { border: 1px solid var(--line); background: var(--panel2);
+        color: var(--text); border-radius: 8px; padding: 3px 9px; font-size: 13px;
+        cursor: pointer; flex: none; line-height: 1.4; }
+  #inboxcard .imic.rec { background: #8a3d2f; border-color: #8a3d2f; }
   .inbox { display: flex; flex-direction: column; gap: 8px; width: 100%; }
   .note { background: var(--panel); border: 1px solid var(--line);
           border-radius: 10px; padding: 9px 12px; }
@@ -676,6 +691,11 @@
       <button id="tab-squad">Squads</button>
       <button id="tab-esc">Esc<span id="escbadge"></span></button>
       <button id="spawn" title="spawn a terminal tab (Windows Terminal)">＋</button>
+    </div>
+    <div id="inboxcard" title="your inbox — notes and dictation drills">
+      <span class="ilabel">inbox</span>
+      <span class="icount" id="inboxcount"></span>
+      <button class="imic" id="inboxmic" title="dictate straight into the inbox">🎤</button>
     </div>
     <input id="filter" placeholder="filter sessions…" autocomplete="off">
     <div id="threads"></div>
@@ -2075,27 +2095,14 @@ async function send() {
   if (!sel) {
     // No thread selected: this is the inbox, the one thread that is not a
     // conversation. It used to `return` here and the message simply vanished.
-    let out = null;
-    try {
-      const r = await fetch("/api/inbox", { method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({ msg: text }) });
-      out = await r.json().catch(() => null);
-    } catch (e) { out = { ok: false, detail: e.message }; }
+    composeError("");
+    const out = await keepNote(text);
     if (!out || !out.ok) {
       composeError("could not keep that" + (out && out.detail ? " \u2014 " + out.detail : ""));
       return;
     }
     box.value = "";
     growBox();
-    if (out.rule) {
-      // the drill: say the fix, and it reaches the library rather than the pile
-      const r = out.rule;
-      composeError(`word fix ${r.action}: ${r.from} \u2192 ${r.to || "(removed)"}`);
-    } else {
-      composeError("");
-    }
-    loadInbox();
     return;
   }
   const toTitle = sel, toSide = selSide;      // the thread may change mid-flight
@@ -2133,7 +2140,53 @@ document.getElementById("sendb").onclick = send;
 // one place in the app that points at no session, which makes it the right
 // place for notes and for dictation drills: say a line, see exactly what the
 // mic heard, correct it with heard=meant*, say it again.
+// Keeping one note is the same act whether it was typed or spoken, so both
+// paths land here rather than each reimplementing the rule precedence.
+async function keepNote(text) {
+  let out = null;
+  try {
+    const r = await fetch("/api/inbox", { method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ msg: text }) });
+    out = await r.json().catch(() => null);
+  } catch (e) { out = { ok: false, detail: e.message }; }
+  if (out && out.ok && out.rule) {
+    const r = out.rule;
+    composeError(`word fix ${r.action}: ${r.from} \u2192 ${r.to || "(removed)"}`);
+  }
+  await refreshInboxCount();
+  if (!sel) loadInbox();
+  return out;
+}
+
+async function refreshInboxCount() {
+  const el = document.getElementById("inboxcount");
+  if (!el) return;
+  try {
+    const n = ((await (await fetch("/api/inbox?limit=5000")).json()).notes || []).length;
+    el.textContent = n ? String(n) : "";
+  } catch (e) { /* leave the last known count rather than blanking it */ }
+}
+
+document.getElementById("inboxcard").onclick = e => {
+  if (e.target.closest(".imic")) return;      // the mic is its own control
+  sel = null;
+  composeError("");
+  renderList();
+  document.getElementById("hinfo").textContent = "ping hub";
+  document.getElementById("box").placeholder = "keep a note\u2026";
+  loadInbox();
+};
+
+// Dictate into the inbox from anywhere, including with a thread selected. The
+// `into` hook already exists on the recorder for exactly this: a target that
+// wants the transcript rather than a ping.
+document.getElementById("inboxmic").onclick = () =>
+  startRec({ label: "inbox", into: t => keepNote(t) });
+
 async function loadInbox() {
+  document.getElementById("inboxcard").classList.toggle("on", !sel);
+  refreshInboxCount();
   if (sel) return;                       // a thread took over while this was in flight
   const box = document.getElementById("msgs");
   let notes = [];
@@ -2288,7 +2341,8 @@ let rec = null, chunks = [], recCancelled = false, recTarget = null;
 document.getElementById("micb").onclick = () =>
   startRec(sel ? { title: sel, side: selSide } : null);
 async function startRec(target) {
-  const btn = document.getElementById("micb");
+  const btn = document.getElementById(
+    target && target.label === "inbox" ? "inboxmic" : "micb");
   recTarget = target;
   if (rec && rec.state === "recording") return;  // modal owns stop/cancel
   try {
