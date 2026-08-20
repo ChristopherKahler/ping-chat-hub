@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "claude-chat"
-version = "0.2.0"
+version = "0.2.1"
 description = "Claude Code sessions in a browser — any directory, saved workspaces, live turn telemetry, mid-flight steering, Allow/Deny approvals."
 # 3.11, not 3.10: the hub reads hub.toml, cx.toml and commands.toml with
 # tomllib, which is stdlib only from 3.11

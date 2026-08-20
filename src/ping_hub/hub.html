@@ -389,10 +389,30 @@
           border-radius: 999px; padding: 3px 11px; font-size: 12px; font-weight: 600;
           cursor: pointer; margin-left: 4px; flex: none; white-space: nowrap; }
   #updb.show { display: inline-block; }
-  #modal .relnotes { max-height: 40vh; overflow-y: auto; white-space: pre-wrap;
-        word-break: break-word; background: var(--panel2); border: 1px solid var(--line);
-        border-radius: 8px; padding: 10px 12px; font-size: 13px; line-height: 1.5;
+  #modal .relnotes { max-height: 40vh; overflow-y: auto; word-break: break-word;
+        background: var(--panel2); border: 1px solid var(--line);
+        border-radius: 8px; padding: 10px 12px; font-size: 13px; line-height: 1.55;
         margin: 4px 0 2px; }
+  #modal .relnotes > :first-child { margin-top: 0; }
+  #modal .relnotes > :last-child { margin-bottom: 0; }
+  #modal .relnotes h1, #modal .relnotes h2, #modal .relnotes h3 {
+        margin: 12px 0 6px; font-size: 14px; color: var(--accent);
+        text-transform: none; letter-spacing: 0; }
+  #modal .relnotes p { margin: 6px 0; }
+  #modal .relnotes ul, #modal .relnotes ol { margin: 6px 0; padding-left: 20px; }
+  #modal .relnotes li { margin: 2px 0; }
+  #modal .relnotes a { color: var(--accent2); }
+  #modal .relnotes code { font-family: ui-monospace, Consolas, monospace;
+        font-size: 12px; background: var(--panel); border: 1px solid var(--line);
+        border-radius: 4px; padding: 1px 5px; }
+  /* a fenced block is the one thing here that can be WIDER than the modal:
+     an install line is a URL that does not wrap. It scrolls itself rather
+     than pushing the page sideways. */
+  #modal .relnotes pre { margin: 8px 0; padding: 9px 11px; background: var(--panel);
+        border: 1px solid var(--line); border-radius: 8px; overflow-x: auto; }
+  #modal .relnotes pre code { background: none; border: none; padding: 0;
+        white-space: pre; }
+  #modal .relnotes hr { border: none; border-top: 1px solid var(--line); margin: 10px 0; }
   #modal .vrow { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap;
                  margin: 2px 0 10px; font-size: 14px; }
   #modal .vrow b { color: var(--accent); font-family: ui-monospace, Consolas, monospace; }
@@ -1941,6 +1961,81 @@ async function copyText(text) {
   return ok;
 }
 
+// Release notes arrive as markdown and were being shown as literal asterisks
+// and hashes. This renders the subset GitHub actually emits for a release:
+// headings, emphasis, code, fenced blocks, lists, links, rules.
+//
+// Escaping happens FIRST and to the whole string, so nothing that arrives in
+// the notes can become markup. Everything after that only ever introduces tags
+// this function wrote itself. The notes come from a GitHub release, which is
+// not a trusted input just because it is usually ours.
+function renderMarkdown(text) {
+  const esc = t => String(t == null ? "" : t)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    // The quote is escaped for a reason the probe found and reading could not:
+    // a link URL is written into an href="..." attribute, and a URL is allowed
+    // to contain a quote. `[click](https://a.com/" onmouseover="alert(1))`
+    // closed the attribute and put a real event handler on a real anchor.
+    // Escaping &, < and > is enough for TEXT and not enough for an ATTRIBUTE.
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  const src = esc(text).replace(/\r\n?/g, "\n");
+
+  // Fenced blocks come out first and leave a placeholder, so the inline rules
+  // below cannot reach inside them — an asterisk in a shell command is not
+  // emphasis, and a pipeline is not a list.
+  const blocks = [];
+  let body = src.replace(/```[^\n]*\n([\s\S]*?)```/g, (_, code) => {
+    blocks.push(code.replace(/\n$/, ""));
+    return "\u0000BLOCK" + (blocks.length - 1) + "\u0000";
+  });
+
+  const inline = s => s
+    .replace(/`([^`\n]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[\s(])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+    .replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g,
+             '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+    // a bare URL, but never one already inside an href we just wrote
+    .replace(/(^|[\s])(https?:\/\/[^\s<]+)/g,
+             '$1<a href="$2" target="_blank" rel="noopener noreferrer">$2</a>');
+
+  const out = [];
+  let list = null;                 // "ul" | "ol" | null
+  const closeList = () => { if (list) { out.push("</" + list + ">"); list = null; } };
+
+  for (const raw of body.split("\n")) {
+    const line = raw.trimEnd();
+    let m;
+    if (/^\u0000BLOCK\d+\u0000$/.test(line.trim())) {
+      closeList();
+      const i = Number(line.trim().replace(/\u0000BLOCK|\u0000/g, ""));
+      out.push("<pre><code>" + blocks[i] + "</code></pre>");
+    } else if (!line.trim()) {
+      closeList();
+    } else if (/^\s*(---+|\*\*\*+|___+)\s*$/.test(line)) {
+      closeList();
+      out.push("<hr>");
+    } else if ((m = /^(#{1,6})\s+(.*)$/.exec(line))) {
+      closeList();
+      const level = Math.min(m[1].length + 1, 3);   // h1 in notes is not an h1 here
+      out.push(`<h${level}>${inline(m[2])}</h${level}>`);
+    } else if ((m = /^\s*[-*+]\s+(.*)$/.exec(line))) {
+      if (list !== "ul") { closeList(); out.push("<ul>"); list = "ul"; }
+      out.push("<li>" + inline(m[1]) + "</li>");
+    } else if ((m = /^\s*\d+[.)]\s+(.*)$/.exec(line))) {
+      if (list !== "ol") { closeList(); out.push("<ol>"); list = "ol"; }
+      out.push("<li>" + inline(m[1]) + "</li>");
+    } else if (list) {
+      // a wrapped continuation of the bullet above, not a new paragraph
+      out[out.length - 1] = out[out.length - 1].replace(/<\/li>$/, " " + inline(line.trim()) + "</li>");
+    } else {
+      out.push("<p>" + inline(line.trim()) + "</p>");
+    }
+  }
+  closeList();
+  return out.join("\n");
+}
+
 function age(ts) {
   if (!ts) return "";
   const s = Math.max(0, (Date.now() - new Date(ts).getTime()) / 1000);
@@ -2878,7 +2973,8 @@ function updateModal() {
         ? `<div class="hint">This installs ${esc(s.name)} and restarts the hub. It
              takes a few seconds, and the page reloads itself once the new version
              answers.</div>
-           <div class="relnotes">${esc(s.notes) || "no release notes"}</div>`
+           <div class="relnotes">${s.notes ? renderMarkdown(s.notes)
+                                                 : "<p>no release notes</p>"}</div>`
         : `<div class="hint">You are on the newest release.</div>`)}
     <div id="updmsg" class="hint"></div>
     <div class="actions">
