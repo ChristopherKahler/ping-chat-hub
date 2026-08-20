@@ -669,7 +669,7 @@
   </div>
   <div id="divider" title="drag to resize"></div>
   <div id="main">
-    <div id="head"><button id="burger" title="threads">☰</button><span id="hinfo">ping hub</span><button id="clearb" title="clear or close this session">⟳</button><button id="gear" title="settings">⚙</button><button id="updb" title="an update is available">update</button></div>
+    <div id="head"><button id="burger" title="threads">☰</button><span id="hinfo" title="click to deselect the thread">ping hub</span><button id="clearb" title="clear or close this session">⟳</button><button id="gear" title="settings">⚙</button><button id="updb" title="an update is available">update</button></div>
     <div id="msgs"><div id="empty">select a thread — pings only, both directions</div></div>
     <div id="esc-list"></div>
     <button id="ttsstop" title="stop speech / skip to next">⏹</button>
@@ -2058,7 +2058,27 @@ function composeError(text) {
 async function send() {
   const box = document.getElementById("box");
   const text = box.value.trim();
-  if (!sel || !text) return;
+  if (!text) return;
+  if (!sel) {
+    // No thread selected. A word fix still goes through — the library is
+    // global and never needed a conversation. Anything else says so out loud:
+    // this used to `return` and the message simply vanished.
+    let out = null;
+    try {
+      const r = await fetch("/api/replacements/rule", { method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ msg: text }) });
+      out = await r.json().catch(() => null);
+    } catch (e) { out = { ok: false, detail: e.message }; }
+    if (out && out.ok) {
+      box.value = "";
+      growBox();
+      composeError(`word fix ${out.action}: ${out.from} \u2192 ${out.to || "(removed)"}`);
+      return;
+    }
+    composeError("pick a thread first \u2014 or type a word fix like heard=meant*");
+    return;
+  }
   const toTitle = sel, toSide = selSide;      // the thread may change mid-flight
   box.value = "";
   localStorage.removeItem("draft:" + toSide + ":" + toTitle);
@@ -2088,6 +2108,23 @@ async function send() {
   }
 }
 document.getElementById("sendb").onclick = send;
+
+// Clicking the title lets go of the thread. Before this the only way back to
+// the empty screen was a reload, which threw away everything the page held in
+// memory just to stop looking at one conversation.
+//
+// The pane is repainted here rather than left to loadThread(), which returns
+// at `if (!sel)` and would leave the previous thread's messages sitting there
+// an empty header.
+document.getElementById("hinfo").onclick = () => {
+  if (!sel) return;
+  sel = null;
+  composeError("");
+  renderList();
+  document.getElementById("hinfo").textContent = "ping hub";
+  document.getElementById("msgs").innerHTML =
+    '<div id="empty">select a thread — pings only, both directions</div>';
+};
 // Slack-style drafts: unsent text is keyed per thread and survives navigation
 // and reloads indefinitely — cleared only by a successful send
 document.getElementById("box").addEventListener("input", () => {

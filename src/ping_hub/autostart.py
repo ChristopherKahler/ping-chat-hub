@@ -17,6 +17,7 @@ from pathlib import Path
 HUB_TASK = "ping-chat-hub"
 STT_TASK = "ping-chat-hub-stt"
 CXPTT_TASK = "ping-chat-hub-cxptt"
+DICTATE_TASK = "ping-chat-hub-dictate"
 
 # The interim wiring this replaces (added by hand 2026-08-19 to stop the
 # bleeding). It is removed only once its replacement is REGISTERED and the
@@ -50,6 +51,12 @@ def plan(cfg) -> list[tuple[str, list[str]]]:
     if (cfg.cx_ptt.enabled and cfg.cx_ptt.autostart
             and cfg.cx_ptt.launcher and cfg.probe.exists(cfg.cx_ptt.launcher)):
         out.append((CXPTT_TASK, [str(cfg.cx_ptt.launcher)]))
+    # the desktop mic, on the same terms and for the same reason: a logon task
+    # pointing at a .cmd that was never written fails silently every boot
+    if (cfg.desktop_stt.enabled and cfg.desktop_stt.autostart
+            and cfg.desktop_stt.launcher
+            and cfg.probe.exists(cfg.desktop_stt.launcher)):
+        out.append((cfg.desktop_stt.task, [str(cfg.desktop_stt.launcher)]))
     return out
 
 

@@ -285,14 +285,12 @@ def status(cfg, rows=None) -> dict:
 
 
 def script_path(cfg) -> Path:
-    """Where dictate.py lives. `Tools` and `tools` both exist on Windows and
-    only one of them is what was actually created."""
-    p = cfg.probe
-    for tools in ("Tools", "tools"):
-        c = p.home() / tools / "stt" / SCRIPT
-        if p.exists(c):
-            return c
-    return p.home() / "Tools" / "stt" / SCRIPT
+    """Where dictate.py runs from — the provisioned copy, named by config.
+
+    This used to hunt for it under the operator's home directory, which worked
+    on the machine it was written on and nowhere else.
+    """
+    return cfg.desktop_stt.script
 
 
 def restart(cfg, rows=None, kill=None, start=None) -> dict:
@@ -324,27 +322,23 @@ def _kill(pid: int) -> None:
              capture_output=True, text=True, timeout=20)
 
 
-LAUNCH_TASK = "DictateCleanLaunch"
-
-
 def _start(cfg) -> tuple[bool, str]:
-    r = proc.run(["schtasks", "/run", "/tn", LAUNCH_TASK],
+    task = cfg.desktop_stt.task
+    r = proc.run(["schtasks", "/run", "/tn", task],
                  capture_output=True, text=True, timeout=30)
     out = ((r.stdout or "") + (r.stderr or "")).strip()
     if r.returncode == 0:
-        return True, f"started via scheduled task {LAUNCH_TASK}"
-    # No task on this machine: fall back to a detached launch. It is second
-    # best precisely because of the job-object trap above, so say which one ran.
-    script = script_path(cfg)
-    pyw = Path(os.environ.get("SYSTEMDRIVE", "C:") + "\\Python312\\pythonw.exe")
-    if not script.exists():
-        return False, f"{out or 'schtasks failed'}; and no {script}"
+        return True, f"started via scheduled task {task}"
+    # No task registered: fall back to the provisioned launcher. Second best
+    # precisely because of the job-object trap above, so say which one ran.
+    launcher = cfg.desktop_stt.launcher
+    if not Path(launcher).exists():
+        return False, (f"{out or 'schtasks failed'}; and no launcher at "
+                       f"{launcher}. Run `ping-hub install`.")
     try:
-        # proc.popen, not subprocess: every spawn in this package goes through
-        # it so the console window stays hidden on Windows
-        proc.popen([str(pyw if pyw.exists() else "pythonw"), str(script)],
-                   cwd=str(script.parent))
+        proc.popen([str(launcher)], cwd=str(Path(launcher).parent))
     except OSError as e:
-        return False, f"{out or 'schtasks failed'}; direct launch failed: {e}"
-    return True, (f"scheduled task {LAUNCH_TASK} missing — launched directly "
-                  f"(the hotkey may not register; see docs)")
+        return False, f"{out or 'schtasks failed'}; launcher failed: {e}"
+    return True, (f"the {task} task is not registered - started through the "
+                  f"launcher instead (the hotkey may not register; run "
+                  f"`ping-hub install` to register the task)")

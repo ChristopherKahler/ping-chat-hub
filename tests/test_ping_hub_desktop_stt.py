@@ -28,6 +28,48 @@ def cfg(tmp_path) -> Config:
     return Config({"paths": {"base_gbl": str(tmp_path / "gbl")}}, probe=StubProbe())
 
 
+
+
+def _daemon_side(name):
+    """Load one of the daemon-side modules out of the PACKAGE.
+
+    These used to be loaded from the operator's home directory, because that is
+    the only place they existed. They ship now, so this asserts against the copy
+    that gets installed rather than the copy one machine happens to have.
+    """
+    import importlib.util
+    from pathlib import Path
+    src = Path(ds.__file__).with_name("ptt") / (name + ".py")
+    assert src.exists(), f"{name}.py is not vendored in the package ({src})"
+    spec = importlib.util.spec_from_file_location(name, src)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_the_daemon_ships_inside_the_package():
+    """Folded in, not wired to. If dictate.py is not in the wheel, the Desktop
+    STT tab is a control panel for a program the user does not have."""
+    from pathlib import Path
+    ptt = Path(ds.__file__).with_name("ptt")
+    for name in ("dictate.py", "stt_hubcfg.py", "stt_fixups.py", "stt_decode.py"):
+        assert (ptt / name).is_file(), f"{name} missing from the package"
+
+
+def test_no_vendored_daemon_carries_a_home_directory():
+    """The reason they can ship at all. A literal home path works on exactly one
+    computer, and pubscan guards the tree — this guards the intent."""
+    import re
+    from pathlib import Path
+    ptt = Path(ds.__file__).with_name("ptt")
+    bad = []
+    for f in sorted(ptt.glob("*.py")):
+        for n, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+            if re.search(r"[A-Za-z]:\\\\Users\\\\[A-Za-z]|/home/[a-z][a-z0-9_-]+", line):
+                bad.append(f"{f.name}:{n}: {line.strip()[:70]}")
+    assert not bad, "hardcoded home directories:\n" + "\n".join(bad)
+
+
 # ── hotkeys ──────────────────────────────────────────────────────────────────
 @pytest.mark.parametrize("combo,key,vk", [
     ("ctrl+alt+d", "d", 0x44),
@@ -55,17 +97,7 @@ def test_parse_hotkey_refuses(combo):
 def test_hotkey_tables_agree_with_the_daemon():
     """The app validates; dictate binds. A combo one accepts and the other
     refuses is a hotkey that saves, restarts, and then does nothing."""
-    import importlib.util
-    from pathlib import Path
-    for tools in ("Tools", "tools"):
-        p = Path.home() / tools / "stt" / "stt_hubcfg.py"
-        if p.exists():
-            break
-    else:
-        pytest.skip("dictate side not installed on this machine")
-    spec = importlib.util.spec_from_file_location("stt_hubcfg", p)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    mod = _daemon_side("stt_hubcfg")
     for combo in ("ctrl+alt+d", "ctrl+shift+space", "alt+f9", "ctrl+alt+7",
                   "shift+alt+end", "ctrl+alt+pageup"):
         here, there = ds.parse_hotkey(combo), mod.parse_hotkey(combo)
@@ -203,17 +235,7 @@ def test_the_rule_then_applies_to_speech(cfg):
 def test_rule_matching_matches_the_daemons(cfg):
     """stt_fixups.py carries its own copy of this regex. If they disagree, the
     same sentence is a rule on one mic and a paste on the other."""
-    import importlib.util
-    from pathlib import Path
-    for tools in ("Tools", "tools"):
-        p = Path.home() / tools / "stt" / "stt_fixups.py"
-        if p.exists():
-            break
-    else:
-        pytest.skip("dictate side not installed on this machine")
-    spec = importlib.util.spec_from_file_location("stt_fixups", p)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    mod = _daemon_side("stt_fixups")
     for text in ("head list=headless*", "  a = b *", "um=*",
                  "not a rule", "a=b", "x=y* trailing words", "=b*"):
         assert rep.parse_rule(text) == mod.parse_rule(text), text

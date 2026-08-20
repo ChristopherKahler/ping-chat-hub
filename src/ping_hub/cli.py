@@ -84,6 +84,7 @@ def cmd_install(args) -> int:
         # Mac that is a machine without the feature, not a failed install.
         if os.name == "nt":
             cx = install.provision_cxptt(home, cfg, stt)
+            install.provision_dictate(home, cfg, stt, cx)
             sections["cx_ptt"] = {"launcher": cx["launcher"], "autostart": True}
         else:
             print("\ncx-ptt: Windows only — skipping on this machine")

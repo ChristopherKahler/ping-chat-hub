@@ -40,6 +40,21 @@ from pathlib import Path
 # know these are the same artifacts, not a lookalike release.
 STT_MODEL_URL = ("https://github.com/k2-fsa/sherpa-onnx/releases/download/"
                  "asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2")
+# The desktop mic needs two models the server does not: the streaming one draws
+# the live overlay while someone is still talking, and the punctuation one
+# cases and punctuates that text as it appears. Both are sherpa-onnx release
+# assets, both verified reachable 2026-08-20. The names are exact and were READ
+# from the release listing -- three plausible guesses at the streaming filename
+# all 404'd, which is the whole argument against writing them from memory.
+DICTATE_STREAM_URL = (
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/"
+    "sherpa-onnx-nemotron-speech-streaming-en-0.6b-160ms-int8-2026-04-25.tar.bz2")
+DICTATE_PUNCT_URL = (
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/punctuation-models/"
+    "sherpa-onnx-online-punct-en-2024-08-06.tar.bz2")
+STREAM_MEMBERS = ("encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx",
+                  "tokens.txt")
+PUNCT_MEMBERS = ("model.int8.onnx", "bpe.vocab")
 TTS_MODEL_URL = ("https://github.com/thewh1teagle/kokoro-onnx/releases/download/"
                  "model-files-v1.0/kokoro-v1.0.onnx")
 TTS_VOICES_URL = ("https://github.com/thewh1teagle/kokoro-onnx/releases/download/"
@@ -62,6 +77,9 @@ CXPTT_SRC = Path(__file__).with_name("ptt")
 # on TOP of STT_PIP, into the SAME venv: one app means one interpreter, and
 # cx-ptt loads the very parakeet the STT server already downloaded
 CXPTT_PIP = ["sounddevice", "keyboard"]
+# on top of CXPTT_PIP and into the SAME venv again: the desktop mic adds a tray
+# icon and a clipboard, and nothing else
+DICTATE_PIP = ["pystray", "pillow", "pyperclip"]
 
 
 class InstallError(RuntimeError):
@@ -185,7 +203,9 @@ def provision_stt(home: Path, log=_log) -> dict:
 
 
 def cxptt_launcher_text(py: Path, script: Path, log_path: Path,
-                        env: dict) -> str:
+                        env: dict, title: str = "Work Channel - cx-ptt "
+                                                "(hotkeys from cx.toml)",
+                        who: str = "cx-ptt") -> str:
     """The .cmd that starts the hotkey daemon with its output tee'd.
 
     Not `_launcher()`: the tee and the window title are load-bearing here.
@@ -197,15 +217,15 @@ def cxptt_launcher_text(py: Path, script: Path, log_path: Path,
     sets = "".join(f'set "{k}={v}"\r\n' for k, v in env.items() if v)
     return (
         "@echo off\r\n"
-        "rem Work Channel - cx-ptt hotkey daemon. Written by `ping-hub install`;\r\n"
+        f"rem {who} daemon. Written by `ping-hub install`;\r\n"
         "rem every path below came from provisioning, not from an operator.\r\n"
-        "title Work Channel - cx-ptt (hotkeys from cx.toml)\r\n"
+        f"title {title}\r\n"
         "setlocal\r\n"
         f"{sets}"
         f'powershell -NoProfile -Command "& {{ \'{py}\' -u \'{script}\' 2>&1 '
         f"| Tee-Object -FilePath '{log_path}' }}\"\r\n"
         "echo.\r\n"
-        "echo cx-ptt exited. Press any key to close.\r\n"
+        f"echo {who} exited. Press any key to close.\r\n"
         "pause >nul\r\n")
 
 
@@ -249,7 +269,59 @@ def provision_cxptt(home: Path, cfg, stt: dict, log=_log) -> dict:
                             cx_dir / "ptt-daemon.log", env),
         encoding="utf-8")
     log(f"wrote {launcher}")
-    return {"launcher": str(launcher), "dir": str(root), "python": str(py)}
+    return {"launcher": str(launcher), "dir": str(root), "python": str(py),
+            "env": env}
+
+
+def provision_dictate(home: Path, cfg, stt: dict, cxptt: dict, log=_log) -> dict:
+    """The PC-wide mic, folded in rather than pointed at.
+
+    It shares cx-ptt's directory, venv and parakeet on purpose: these are one
+    speech install with two front ends, and a second 480MB download to run the
+    same model would be a bug with a progress bar. What it does add is the
+    streaming model that draws the live overlay and the punctuation model that
+    cases it as it appears -- neither of which the STT server needs.
+
+    Every path reaches dictate.py through this env block. The script itself
+    holds no home directory, which is what lets it live inside the package and
+    what pubscan keeps true.
+    """
+    root = Path(cxptt["dir"])
+    py = make_venv(Path(stt["python"]).parent.parent,
+                   STT_PIP + CXPTT_PIP + DICTATE_PIP, log)
+    models = root / "models"
+    for url, name, members in ((DICTATE_STREAM_URL, "stream", STREAM_MEMBERS),
+                               (DICTATE_PUNCT_URL, "punct", PUNCT_MEMBERS)):
+        dest = models / name
+        if all((dest / m).exists() for m in members):
+            log(f"{name} model already present at {dest}")
+            continue
+        with tempfile.TemporaryDirectory() as td:
+            arc = download(url, Path(td) / (name + ".tar.bz2"), log)
+            got = extract_bz2(arc, root / "extract", log)
+            verify_members(got, members)
+            if dest.exists():
+                shutil.rmtree(dest)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(got), str(dest))
+            log(f"installed the {name} model to {dest}")
+    shutil.rmtree(root / "extract", ignore_errors=True)
+    env = dict(cxptt.get("env") or {})
+    env.update({
+        "PING_HUB_STREAM_MODEL": str(models / "stream"),
+        "PING_HUB_PUNCT_MODEL": str(models / "punct"),
+        "PING_HUB_STT_MODEL": stt["model_dir"],
+        "PING_HUB_STORE": str(cfg.paths.base_store / "hub"),
+    })
+    launcher = root / "start-dictate.cmd"
+    launcher.write_text(
+        cxptt_launcher_text(py, root / "dictate.py",
+                            Path(env["PING_HUB_CX_DIR"]) / "dictate-daemon.log",
+                            env, title="Desktop dictation", who="dictate"),
+        encoding="utf-8")
+    log(f"wrote {launcher}")
+    return {"launcher": str(launcher), "dir": str(root),
+            "python": str(py), "models": str(models)}
 
 
 def provision_tts(home: Path, log=_log) -> dict:

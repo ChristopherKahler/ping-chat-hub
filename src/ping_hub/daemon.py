@@ -1010,6 +1010,17 @@ class Handler(BaseHTTPRequestHandler):
                             "detail": f"spawning {side} tab in {cwd or 'home'}"})
             except OSError as e:
                 self._json({"ok": False, "detail": str(e)}, 500)
+        elif u.path == "/api/replacements/rule":
+            # A word fix belongs to the LIBRARY, not to a conversation. Making
+            # it require a selected thread was an accident of living on the
+            # send path: with nothing selected the compose box swallowed the
+            # rule and said nothing (Chris, 2026-08-20).
+            from ping_hub import replacements
+            rule = replacements.consume_rule(CFG, str(payload.get("msg", "")))
+            if rule is None:
+                self._json({"ok": False, "detail": "not a rule"}, 400)
+            else:
+                self._json(rule, 200 if rule.get("ok") else 400)
         elif u.path == "/api/replacements":
             from ping_hub import replacements
             try:

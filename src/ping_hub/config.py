@@ -438,6 +438,48 @@ class TtsSection(_Section):
         return str(self._get("default_voice", "af_heart"))
 
 
+class DesktopSttSection(_Section):
+    """The PC-wide dictation daemon — the mic that pastes into whatever window
+    has focus, as opposed to cx-ptt which pings a session.
+
+    Everything here derives. The daemon it drives ships inside this package and
+    is provisioned beside cx-ptt, so the defaults describe where `ping-hub
+    install` puts things rather than where one operator happened to put them.
+    """
+
+    @property
+    def enabled(self) -> bool:
+        v = self._get("enabled")
+        if v is not None:
+            return bool(v)
+        return self._cfg.probe.exists(self.launcher)
+
+    @property
+    def autostart(self) -> bool:
+        return bool(self._get("autostart", True))
+
+    @property
+    def script(self) -> Path:
+        """dictate.py as provisioned. Not the package copy: the package copy is
+        the SOURCE, and running it in place would leave a second daemon that
+        looks identical in a process list and reads different settings."""
+        return Path(self._derived(
+            "script", lambda: str(self._cfg.paths.hub_home / "cxptt" / "dictate.py")))
+
+    @property
+    def launcher(self) -> Path:
+        return Path(self._derived(
+            "launcher",
+            lambda: str(self._cfg.paths.hub_home / "cxptt" / "start-dictate.cmd")))
+
+    @property
+    def task(self) -> str:
+        """The logon task that starts it. A name, not a literal buried in a
+        module: the daemon has to be restartable from the app, and the app
+        cannot restart a task it cannot name."""
+        return str(self._get("task", "ping-chat-hub-dictate"))
+
+
 class UpdateSection(_Section):
     @property
     def source(self) -> str:
@@ -546,6 +588,7 @@ class Config:
         self.stt = SttSection(raw.get("stt", {}), self)
         self.tts = TtsSection(raw.get("tts", {}), self)
         self.cx_ptt = CxPttSection(raw.get("cx_ptt", {}), self)
+        self.desktop_stt = DesktopSttSection(raw.get("desktop_stt", {}), self)
         self.update = UpdateSection(raw.get("update", {}), self)
 
 
