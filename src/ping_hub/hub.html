@@ -349,6 +349,23 @@
   #modal .actions button { border-radius: 8px; padding: 8px 18px; cursor: pointer;
         border: 1px solid var(--line); background: var(--panel2); color: var(--text); }
   #modal .actions .save { background: var(--accent2); color: #1d1812; border: none; }
+  /* The 5s poll is this page's pulse. When it stopped, NOTHING on screen
+     changed — the last-good roster sat there looking alive while every message
+     that landed went unseen, and it read as messages being dropped (Chris,
+     2026-08-19). z-index clears #side's 15 so it is visible with the phone
+     sidebar open, which is exactly when a dead roster matters most. */
+  #offline { display: none; position: fixed; top: 0; left: 0; right: 0; z-index: 30;
+             background: var(--dead); color: #1d1812; text-align: center;
+             font-size: 13px; padding: 6px 10px; cursor: pointer; }
+  #offline.show { display: block; }
+  /* Bottom-right, one thumb above the compose bar. NOT the top bar: ⟳ already
+     lives there meaning close-out, and two reload-shaped glyphs side by side
+     is a misfire waiting to happen. */
+  #reloadb { position: fixed; right: 14px; bottom: 78px; z-index: 25;
+             width: 40px; height: 40px; border-radius: 50%; cursor: pointer;
+             border: 1px solid var(--line); background: var(--panel2);
+             color: var(--text); font-size: 17px; opacity: 0.5; padding: 0; }
+  #reloadb:hover, #reloadb:focus { opacity: 1; }
   #msgs { flex: 1; overflow-y: auto; padding: 16px 18px; display: flex;
           flex-direction: column; gap: 8px; }
   /* overflow-wrap: a token with no break opportunity (a long hash, a base64
@@ -356,6 +373,13 @@
      this brings .msg in line. */
   .msg { max-width: 72%; padding: 8px 12px; border-radius: 10px; font-size: 15px;
          overflow-wrap: anywhere; }
+  /* a relay ping is WRITTEN in paragraphs and stores real newlines; without
+     pre-wrap the browser collapsed every one of them into a single block.
+     It sits on the text child, not the bubble, so .who chrome can never
+     inherit stray template whitespace. #resp-acc .rrow has done exactly this
+     since it was written, which is why the accordion always read correctly
+     while the bubbles above it did not. */
+  .msg .mbody { white-space: pre-wrap; }
   .msg .who { font-size: 12px; color: var(--dim); margin-bottom: 2px; }
   .msg .sayit { cursor: pointer; opacity: 0.6; margin-left: 6px; }
   .msg .sayit:hover { opacity: 1; }
@@ -477,6 +501,10 @@
     .th .edit { opacity: 1; font-size: 16px; padding: 4px; }
     .th .sweep { opacity: 1; font-size: 15px; padding: 4px; }
     #msgs { padding: 10px; }
+    /* thumb target, and clear of the phone compose row which is taller */
+    #reloadb { width: 48px; height: 48px; right: 12px;
+               font-size: 20px; opacity: 0.75; }
+    #offline { font-size: 14px; padding: 9px 10px; }
     .msg { max-width: 92%; }
     #modal { width: 94vw; padding: 14px; }
     /* The cancel button measured 80x33 and sat below the fold inside the
@@ -537,6 +565,10 @@
 </style>
 </head>
 <body>
+  <!-- the bar is the tap target as well as the notice: installed as a PWA
+       there is no browser chrome and no other way back from a stale page. -->
+  <div id="offline" title="reload the hub">not connected — tap to reload</div>
+  <button id="reloadb" title="reload the hub">🔄</button>
   <div id="side">
     <div id="tabs">
       <button id="tab-term" class="on">Terminals</button>
@@ -642,8 +674,54 @@ function popOutside(e) {
 }
 function popEsc(e) { if (e.key === "Escape") closePop(); }
 
+// The poll going quiet used to be invisible. It is the one failure that looks
+// exactly like "nothing is happening", so it gets its own state, its own way
+// back, and a backoff so a hub that is down is not hammered every 5s.
+let offline = false, pollDelay = 5000;
+const POLL_OK = 5000, POLL_MAX = 30000;
+// The compose row is taller on the phone (its buttons wrap) and taller again
+// while the textarea grows, so no fixed offset clears it at both widths.
+// Measured at 390px it sat ON the compose bar. Anchor to the real height.
+function placeReload() {
+  const b = document.getElementById("reloadb"), c = document.getElementById("compose");
+  if (b && c) b.style.bottom = (Math.round(c.getBoundingClientRect().height) + 14) + "px";
+}
+addEventListener("resize", placeReload);
+
+function setOffline(down) {
+  if (down === offline) return;              // transitions only
+  offline = down;
+  const bar = document.getElementById("offline");
+  if (bar) {
+    bar.classList.toggle("show", down);
+    // DISPLACE, do not overlay. Measured at 390px the fixed bar sat on top of
+    // the burger, so a disconnected page could not open its own thread list —
+    // the one control you need when the page has gone stale. Measure the bar
+    // rather than hardcode a height: it is taller on the phone.
+    const h = down ? bar.offsetHeight + "px" : "";
+    document.body.style.paddingTop = h;
+    // #side is fixed to the viewport on the phone, so body padding cannot move
+    // it. On desktop it is in flow and this inline top is inert.
+    const side = document.getElementById("side");
+    if (side) side.style.top = h;
+  }
+  // Coming back: whatever landed while we were out was never delivered to this
+  // page and never will be, because addMsg only fires from onmessage. Re-read.
+  if (!down) { loadThread(); refreshEscBadge(); }
+}
+
 async function loadRoster() {
-  roster = await (await fetch("/api/threads")).json();
+  let next;
+  try {
+    next = await (await fetch("/api/threads")).json();
+  } catch (e) {
+    pollDelay = Math.min(pollDelay * 2, POLL_MAX);
+    setOffline(true);
+    return;                                  // stale roster stays, but it SAYS so
+  }
+  pollDelay = POLL_OK;
+  setOffline(false);
+  roster = next;
   // a SIBLING request, not a field on the roster: bridge-down has to be
   // answerable when the roster is EMPTY, which is exactly when it matters
   try { bridgeState = await (await fetch("/api/bridge")).json(); } catch (e) { /* hub restarting */ }
@@ -1174,7 +1252,9 @@ function addMsg(m) {
   const box = document.getElementById("msgs");
   const el = document.createElement("div");
   el.className = "msg " + (m.peer ? "peer" : (m.dir === "out" ? "out" : "in"));
-  const text = (m.summary || "").replace(/</g, "&lt;");
+  // trailing blank lines are invisible under white-space:normal and a
+  // dangling empty row under pre-wrap. Trim the tail, keep the middle.
+  const text = (m.summary || "").replace(/\s+$/, "").replace(/</g, "&lt;");
   // inline image render for [image] <path> pings
   const im = (m.summary || "").match(/^\[image\] (\S+[\\/]images[\\/](\S+?[\\/][^\s]+))( — (.*))?$/);
   const LIMIT = 280;
@@ -1185,15 +1265,18 @@ function addMsg(m) {
            (im[4] ? `<div>${im[4].replace(/</g, "&lt;")}</div>` : "");
   } else
   if (text.length > LIMIT) {
-    body = `<span class="short">${text.slice(0, LIMIT)}…</span><span class="full" style="display:none">${text}</span>
-            <a class="more" style="color:var(--accent);cursor:pointer;font-size:13px"> more ▸</a>`;
+    // the cut lands wherever 280 chars land — often mid-blank-line. Under
+    // pre-wrap that stranded the … and the more-link alone below a gap.
+    body = `<span class="short">${text.slice(0, LIMIT).replace(/\s+$/, "")}…</span>`
+         + `<span class="full" style="display:none">${text}</span>`
+         + `<a class="more" style="color:var(--accent);cursor:pointer;font-size:13px"> more ▸</a>`;
   } else {
     body = text;
   }
   const speakable = m.dir === "in" && !m.peer && (m.summary || "").trim();
   el.innerHTML = `<div class="who">${m.from} · <span title="${(m.created || m.ts || "").replace(/"/g, "")}">${when(m.created || m.ts)}</span>` +
     (speakable ? ` <span class="sayit" title="read this aloud">🔊</span>` : "") +
-    `</div>` + body;
+    `</div><div class="mbody">` + body + `</div>`;
   const sayit = el.querySelector(".sayit");
   if (sayit) sayit.onclick = () => {
     fetch("/api/tts", { method: "POST",
@@ -2769,9 +2852,25 @@ async function checkVersion() {
     if (el) el.onclick = () => location.reload();
   }
 }
+// A poll retry cannot fix stale JAVASCRIPT, and after a deploy that is exactly
+// what is wrong. Both controls reload the document. sw.js passes through and
+// wipes every cache on activate, so a plain reload really does refetch.
+for (const id of ["offline", "reloadb"]) {
+  const el = document.getElementById(id);
+  if (el) el.onclick = () => location.reload();
+}
+placeReload();
+if (window.ResizeObserver) {
+  const c = document.getElementById("compose");
+  if (c) new ResizeObserver(placeReload).observe(c);
+}
 checkVersion();
 setInterval(checkVersion, 20000);
-setInterval(loadRoster, 5000);
+// self-scheduling instead of a fixed interval: the delay has to be able to
+// grow while the hub is down, and shrink the moment it answers again.
+(function pollRoster() {
+  setTimeout(() => { loadRoster().finally(pollRoster); }, pollDelay);
+})();
 setInterval(refreshEscBadge, 10000);
 </script>
 </body>

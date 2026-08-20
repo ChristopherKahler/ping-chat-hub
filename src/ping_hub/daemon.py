@@ -269,6 +269,29 @@ def spawn_tab(side: str, claude_args: list[str], cwd: str | None = None,
     spawn.spawn(CFG, side, claude_args, cwd, title, prompt)
 
 
+def _cwd_spellings(cwd: str) -> list[str]:
+    """Every string Claude Code might record for ONE folder.
+
+    Claude Code keys `projects` by the raw cwd string it was launched with and
+    never canonicalises it. Chris's own ~/.claude.json carries 16 backslash
+    keys and 19 forward-slash keys — including both spellings of this very
+    repo. Seed one spelling, get read under the other, and the folder-trust
+    dialog appears: a spawned session that hangs forever with nobody watching
+    it (two spawns lost this way, 2026-08-19).
+
+    POSIX paths keep a single key: flipping their separators would write
+    garbage keys into the WSL side's config, so only Windows-shaped paths
+    get a second spelling.
+    """
+    out = [cwd]
+    windowsish = "\\" in cwd or (len(cwd) > 1 and cwd[1] == ":")
+    if windowsish:
+        for alt in (cwd.replace("\\", "/"), cwd.replace("/", "\\")):
+            if alt not in out:
+                out.append(alt)
+    return out
+
+
 def pre_trust(side: str, cwd: str) -> None:
     """Seed Claude Code's per-folder trust + global bypass acceptance in that
     side's ~/.claude.json BEFORE the spawn, so the new session boots with zero
@@ -286,11 +309,15 @@ def pre_trust(side: str, cwd: str) -> None:
     except (OSError, ValueError):
         return  # unreadable config (WSL down / first boot): spawn anyway
     d["bypassPermissionsModeAccepted"] = True
-    p = d.setdefault("projects", {}).setdefault(cwd, {})
-    p["hasTrustDialogAccepted"] = True
-    p["hasTrustDialogHooksAccepted"] = True
-    p["hasCompletedProjectOnboarding"] = True
-    p.setdefault("projectOnboardingSeenCount", 1)
+    # every spelling, not just the one the hub happens to hold — see
+    # _cwd_spellings. Normalising instead would not close this: the hub does
+    # not control which spelling Claude Code writes down for itself.
+    for key in _cwd_spellings(cwd):
+        p = d.setdefault("projects", {}).setdefault(key, {})
+        p["hasTrustDialogAccepted"] = True
+        p["hasTrustDialogHooksAccepted"] = True
+        p["hasCompletedProjectOnboarding"] = True
+        p.setdefault("projectOnboardingSeenCount", 1)
     tmp = cfg.parent / (cfg.name + ".hub-tmp")
     tmp.write_text(json.dumps(d), encoding="utf-8")
     tmp.replace(cfg)
