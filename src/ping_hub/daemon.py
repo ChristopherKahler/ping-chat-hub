@@ -548,6 +548,23 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/replacements":
             from ping_hub import replacements
             self._json(replacements.migrate_if_needed(CFG))
+        elif u.path == "/api/desktop-stt":
+            from ping_hub import desktop_stt
+            self._json(desktop_stt.status(CFG))
+        elif u.path == "/api/desktop-stt/history":
+            from ping_hub import desktop_stt
+            q = parse_qs(u.query)
+            try:
+                limit = int((q.get("limit") or ["200"])[0])
+            except ValueError:
+                limit = 200
+            # stats read the WHOLE record, the list only the tail: the words
+            # per minute of the last 200 takes is a different number from the
+            # words per minute of everything, and the second one is the answer
+            entries = desktop_stt.read_history(CFG, limit=max(1, min(limit, 2000)))
+            self._json({"entries": entries,
+                        "stats": desktop_stt.stats(
+                            desktop_stt.read_history(CFG, limit=0))})
         elif u.path == "/api/clear-preview":
             # everything the confirm modal needs BEFORE anything is reaped:
             # can this session even be cleared, and which handoff would the
@@ -825,8 +842,22 @@ class Handler(BaseHTTPRequestHandler):
             if not title or not msg:
                 self._json({"error": "title and msg required"}, 400)
                 return
+            # A message that IS a replacement rule files the rule AND still
+            # sends. Swallowing it was the first design and it was wrong: the
+            # correction is context the SESSION needs too. "head list=headless*"
+            # tells it that the sentence two messages ago meant something
+            # different, and a rule that only reaches the dictionary leaves the
+            # session still reasoning about the misheard word (Chris, 2026-08-20).
+            from ping_hub import replacements
+            rule = replacements.consume_rule(CFG, msg)
             ok, out = engine.send(title, msg, side=payload.get("side", "win"))
-            self._json({"ok": ok, "detail": out}, 200 if ok else 502)
+            body = {"ok": ok, "detail": out}
+            if rule is not None:
+                body["rule"] = rule
+                if rule.get("ok"):
+                    body["rule_detail"] = (f"{rule.get('action')}: "
+                                           f"{rule.get('from')} → {rule.get('to')}")
+            self._json(body, 200 if ok else 502)
         elif u.path == "/api/escalation-reply":
             ok, out = engine.reply_escalation(
                 payload.get("id", ""), payload.get("msg", ""),
@@ -983,6 +1014,26 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/cx-restart":
             from ping_hub import cxptt
             self._json(cxptt.restart(CFG))
+        elif u.path == "/api/desktop-stt":
+            from ping_hub import desktop_stt
+            try:
+                before = desktop_stt.load(CFG)
+                doc = desktop_stt.save(CFG, payload)
+            except OSError as e:
+                self._json({"ok": False, "detail": str(e)}, 500)
+                return
+            out = {"ok": True, "settings": doc}
+            # mode and cleanup are re-read by dictate before every take, so
+            # they are live the moment Save lands. The hotkey is bound ONCE at
+            # startup by RegisterHotKey, so changing it means a restart -- and
+            # chaining it here is the only way the page cannot forget, exactly
+            # as /api/audio does for a mic change.
+            if doc["hotkey"] != before["hotkey"]:
+                out["restart"] = desktop_stt.restart(CFG)
+            self._json(out)
+        elif u.path == "/api/desktop-stt/restart":
+            from ping_hub import desktop_stt
+            self._json(desktop_stt.restart(CFG))
         elif u.path == "/api/audio":
             from ping_hub import cxptt
             out = cxptt.set_device(CFG, str(payload.get("id", "")),

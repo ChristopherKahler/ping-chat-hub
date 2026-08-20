@@ -333,12 +333,66 @@
            border-radius: 12px; padding: 20px 24px; width: 520px;
            max-height: 85vh; overflow-y: auto; }
   #modal h2 { margin: 0 0 12px; font-size: 17px; color: var(--accent); }
+  /* settings tabs. Panels are HIDDEN, never unmounted: Save reads inputs from
+     every panel in one pass, and a panel that is removed when its tab is not
+     showing would have Save quietly write the defaults over whatever was in
+     it. `hidden` keeps the nodes queryable. */
+  #modal .stabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 14px;
+                  border-bottom: 1px solid var(--line); padding-bottom: 10px; }
+  #modal .stabs button { border-radius: 8px; padding: 7px 14px; cursor: pointer;
+        font-size: 14px; border: 1px solid var(--line);
+        background: var(--panel2); color: var(--dim); }
+  #modal .stabs button.on { background: var(--accent2); color: #1d1812;
+                            border-color: var(--accent2); font-weight: 600; }
+  #modal .stab[hidden] { display: none; }
+  /* dictation history: a scrolling column of takes, each one copyable */
+  #modal .dstat { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 4px; }
+  #modal .dstat div { flex: 1 1 108px; background: var(--panel2);
+        border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+  #modal .dstat b { display: block; font-size: 19px; color: var(--accent);
+                    line-height: 1.2; }
+  #modal .dstat span { font-size: 11px; color: var(--dim);
+                       text-transform: uppercase; letter-spacing: .4px; }
+  #modal .dhist { overflow-y: auto; margin-top: 8px;
+                  border: 1px solid var(--line); border-radius: 8px; }
+  #modal.takes-tab { display: flex; flex-direction: column;
+                     height: 85vh; overflow: hidden; }
+  #modal.takes-tab #set-body { flex: 1 1 auto; min-height: 0;
+                               display: flex; flex-direction: column; }
+  #modal.takes-tab .stab[data-tab="takes"] { flex: 1 1 auto; min-height: 0;
+                                             display: flex; flex-direction: column; }
+  #modal.takes-tab .dhist { flex: 1 1 auto; min-height: 120px; }
+  #modal.takes-tab .stabs, #modal.takes-tab .actions { flex: none; }
+  #modal .stab[data-tab="takes"] .dstat { margin-top: 0; }
+  #modal .dtake { padding: 9px 11px; border-bottom: 1px solid var(--line); }
+  #modal .dtake:last-child { border-bottom: none; }
+  #modal .dtake .dmeta { display: flex; gap: 8px; align-items: center;
+        font-size: 11px; color: var(--dim); margin-bottom: 3px; }
+  #modal .dtake .dmeta .grow { flex: 1; min-width: 0; overflow: hidden;
+                               text-overflow: ellipsis; white-space: nowrap; }
+  #modal .dtake .dcopy { border: 1px solid var(--line); background: var(--panel2);
+        color: var(--text); border-radius: 6px; padding: 2px 8px; font-size: 11px;
+        cursor: pointer; flex: none; }
+  #modal .dtake .dtext { font-size: 13px; line-height: 1.45;
+                         white-space: pre-wrap; word-break: break-word; }
+  #modal .dtake.lost .dmeta { color: #e08a6a; }
+  #modal input[type=text] { flex: 1; min-width: 0; background: var(--panel2);
+        color: var(--text); border: 1px solid var(--line); border-radius: 6px;
+        padding: 7px 9px; font-size: 14px; }
+  #modal .hotkeybox { font-family: ui-monospace, Consolas, monospace;
+                      letter-spacing: .5px; text-align: center; }
+  #modal .hotkeybox.arming { border-color: var(--accent); color: var(--accent); }
   #modal h3 { margin: 16px 0 8px; font-size: 14px; color: var(--dim);
               text-transform: uppercase; letter-spacing: 0.5px; }
   #modal .srow { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
   #modal .srow label { width: 130px; font-size: 14px; }
   #modal select { flex: 1; background: var(--panel2); color: var(--text);
-                  border: 1px solid var(--line); border-radius: 6px; padding: 6px; }
+                  border: 1px solid var(--line); border-radius: 6px; padding: 6px;
+                  /* A flex item will not shrink below its content, and a
+                     select's content is its LONGEST OPTION. "tap once to
+                     start, tap again to finish" pushed the desktop-STT panel
+                     20px past a 320px screen until this was set. */
+                  min-width: 0; }
   #modal input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--accent2); }
   /* wrap, because the row can hold FOUR: cancel, close out first, close,
      clear. Measured at 320px without it (tools/clear_modal_probe.mjs), the
@@ -1848,6 +1902,31 @@ function escCard(c, i) {
   return el;
 }
 
+// navigator.clipboard exists only in a SECURE context. The desktop reaches
+// this page on 127.0.0.1, which counts; the phone reaches it on the LAN IP over
+// plain http, which does not — there the API is simply undefined. A history you
+// cannot copy from the device you are holding is not a history, so fall back to
+// the old textarea trick rather than throwing.
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (e) { /* fall through */ }
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.cssText = "position:fixed;top:-1000px;opacity:0";
+  document.body.appendChild(ta);
+  ta.select();
+  ta.setSelectionRange(0, text.length);
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+  ta.remove();
+  return ok;
+}
+
 function age(ts) {
   if (!ts) return "";
   const s = Math.max(0, (Date.now() - new Date(ts).getTime()) / 1000);
@@ -2407,6 +2486,12 @@ document.getElementById("gear").onclick = async () => {
     `<div class="srow"><input type="checkbox" data-k="${k}" ${snd[k] === false ? "" : "checked"}>
      <label>${lbl}</label><select data-w="${k}">${opts(snd[k + "_wav"] || "default")}</select></div>`).join("");
   ov.querySelector("#set-body").innerHTML = `
+    <div class="stabs">
+      <button type="button" class="on" data-tab="hub">hub</button>
+      <button type="button" data-tab="dictate">desktop STT</button>
+      <button type="button" data-tab="takes">transcripts</button>
+    </div>
+    <div class="stab" data-tab="hub">
     <h3>sound effects — per action</h3>${rows}
     <h3>list</h3>
     <div class="srow"><input type="checkbox" id="s-hide" ${s.hide_inactive ? "checked" : ""}>
@@ -2452,8 +2537,48 @@ document.getElementById("gear").onclick = async () => {
       <button id="rep-all" class="repadd">import all</button>
       <button id="rep-fav" class="repadd">import favourites</button>
     </div>
-    <div id="repmsg" class="hint"></div>`;
+    <div id="repmsg" class="hint"></div>
+    </div>
+    <div class="stab" data-tab="dictate" hidden>
+      <div class="hint">The PC-wide mic — the one that pastes into whatever
+        window has focus, not into a session. Mode and cleanup take effect on
+        your next take; changing the hotkey restarts the daemon.</div>
+      <div id="dstatus" class="hint">loading…</div>
+      <h3>hotkey</h3>
+      <div class="srow"><label>press to record</label>
+        <input type="text" id="d-hotkey" class="hotkeybox" readonly
+               value="ctrl+alt+d" title="click, then press the combination"></div>
+      <div class="hint" id="d-hkmsg">Click the box and press the combination.
+        Needs ctrl, alt or shift — a bare key would fire inside every text box
+        on the machine.</div>
+      <h3>how it records</h3>
+      <div class="srow"><label>mode</label><select id="d-mode">
+        <option value="tap">tap to start, tap to finish</option>
+        <option value="hold">hold, release to finish</option>
+      </select></div>
+      <div class="hint">Tap = press once, talk as long as you like, press again.
+        Hold = walkie-talkie: the take ends when you let the keys go.</div>
+      <div class="srow"><input type="checkbox" id="d-cleanup">
+        <label style="width:auto">accurate re-decode before pasting
+          (off = paste the live text instantly, less accurate)</label></div>
+      <div class="srow"><input type="checkbox" id="d-history">
+        <label style="width:auto">keep a copy of every transcript</label></div>
+      <div class="repbtns">
+        <button type="button" id="d-restart" class="repadd">restart the mic</button>
+      </div>
+    </div>
+    <div class="stab" data-tab="takes" hidden>
+      <div class="dstat" id="dstats"></div>
+      <div class="hint">Newest first — everything you have dictated, kept, so a
+        paste that landed in the wrong window is still recoverable.</div>
+      <div class="repbtns">
+        <button type="button" id="d-copyall" class="repadd">copy all</button>
+      </div>
+      <div class="dhist" id="dhist"><div class="hint" style="padding:10px">loading…</div></div>
+    </div>`;
   ov.querySelector(".save").disabled = false;
+  wireSettingsTabs(ov);
+  wireDesktopStt(ov);
 
   // quick launch rows
   const qlHost = ov.querySelector("#qllist");
@@ -2682,6 +2807,19 @@ document.getElementById("gear").onclick = async () => {
     await fetch("/api/replacements", { method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({ pairs: pairs.filter(p => (p.from || "").trim()) }) });
+    // the desktop mic's own store. Its panel may never have been opened, so
+    // send what is in the inputs only once they have actually been filled from
+    // the server — otherwise Save would write the markup's placeholder values
+    // over real settings for anyone who never clicked the tab.
+    if (ov.dataset.dsttLoaded === "1") {
+      await fetch("/api/desktop-stt", { method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          hotkey: ov.querySelector("#d-hotkey").value,
+          mode: ov.querySelector("#d-mode").value,
+          cleanup: ov.querySelector("#d-cleanup").checked,
+          history: ov.querySelector("#d-history").checked }) });
+    }
     ov.remove();
     renderList();
   };
@@ -2690,6 +2828,165 @@ document.getElementById("gear").onclick = async () => {
   fillVoices(ov, s.tts_voice);
   fillAudio(ov);
 };
+
+// ── settings tabs ───────────────────────────────────────────────────────────
+function wireSettingsTabs(ov) {
+  const btns = [...ov.querySelectorAll(".stabs button")];
+  const panels = [...ov.querySelectorAll(".stab")];
+  btns.forEach(b => {
+    b.onclick = () => {
+      btns.forEach(x => x.classList.toggle("on", x === b));
+      panels.forEach(p => { p.hidden = p.dataset.tab !== b.dataset.tab; });
+      // only the transcripts tab hands its height to a list; the other two
+      // are ordinary content that should size to itself and stop
+      ov.querySelector("#modal").classList.toggle("takes-tab",
+                                                  b.dataset.tab === "takes");
+      // each tab starts at its own top; carrying the hub tab's scroll into a
+      // short panel lands the reader below all of its content
+      ov.querySelector("#modal").scrollTop = 0;
+    };
+  });
+}
+
+// A keyboard event names the same physical key two ways and only one of them
+// is stable: `key` is what the layout PRODUCES, so holding alt can turn "d"
+// into "∂" and shift turns "7" into "&". `code` is the key itself. dictate
+// binds a virtual-key code, so `code` is the half that matches it.
+function hotkeyName(e) {
+  const c = e.code || "";
+  let m;
+  if ((m = /^Key([A-Z])$/.exec(c))) return m[1].toLowerCase();
+  if ((m = /^Digit(\d)$/.exec(c))) return m[1];
+  if ((m = /^F(\d{1,2})$/.exec(c))) return "f" + m[1];
+  const named = { Space: "space", Enter: "enter", Tab: "tab", Escape: "esc",
+    Insert: "insert", Delete: "delete", Home: "home", End: "end",
+    PageUp: "pageup", PageDown: "pagedown", Backspace: "backspace",
+    ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right",
+    Pause: "pause" };
+  return named[c] || "";
+}
+
+async function wireDesktopStt(ov) {
+  const $ = s => ov.querySelector(s);
+  const box = $("#d-hotkey"), msg = $("#d-hkmsg");
+
+  box.onfocus = () => { box.classList.add("arming"); box.dataset.was = box.value; };
+  box.onblur = () => box.classList.remove("arming");
+  box.onkeydown = e => {
+    e.preventDefault();
+    if (e.key === "Escape") { box.value = box.dataset.was || box.value; box.blur(); return; }
+    const name = hotkeyName(e);
+    if (!name) return;                       // a modifier on its own: keep waiting
+    const mods = [];
+    if (e.ctrlKey) mods.push("ctrl");
+    if (e.altKey) mods.push("alt");
+    if (e.shiftKey) mods.push("shift");
+    if (!mods.length) {
+      msg.textContent = "needs ctrl, alt or shift — a bare key would fire in every text box";
+      msg.className = "hint warn";
+      return;
+    }
+    box.value = mods.concat([name]).join("+");
+    msg.textContent = "press Save to bind it — the mic restarts to take it";
+    msg.className = "hint";
+  };
+
+  const drawStats = s => {
+    $("#dstats").innerHTML = [
+      [s.wpm || 0, "words / min"],
+      [s.recent_wpm || 0, `last ${s.recent_days || 7} days`],
+      [s.takes || 0, "takes kept"],
+      [(s.words || 0).toLocaleString(), "words spoken"],
+    ].map(([v, l]) => `<div><b>${v}</b><span>${l}</span></div>`).join("");
+  };
+
+  const esc = t => String(t).replace(/[&<>]/g,
+    c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+
+  const drawHistory = entries => {
+    const host = $("#dhist");
+    if (!entries.length) {
+      host.innerHTML = '<div class="hint" style="padding:10px">nothing yet — ' +
+        'press the hotkey and say something.</div>';
+      return;
+    }
+    host.innerHTML = entries.map((e, i) => {
+      const when = (e.ts || "").replace("T", " ").slice(5, 16);
+      const lost = e.lost ? ` · ${e.lost} piece${e.lost > 1 ? "s" : ""} lost` : "";
+      const where = e.target ? ` · ${esc(e.target).slice(0, 40)}` : "";
+      return `<div class="dtake${e.lost ? " lost" : ""}">
+        <div class="dmeta"><span class="grow">${when} · ${e.words || 0}w ·
+          ${e.wpm || 0}wpm${lost}${where}</span>
+          <button type="button" class="dcopy" data-i="${i}">copy</button></div>
+        <div class="dtext">${esc(e.text)}</div></div>`;
+    }).join("");
+    host.querySelectorAll(".dcopy").forEach(b => {
+      b.onclick = async () => {
+        const ok = await copyText(entries[+b.dataset.i].text);
+        b.textContent = ok ? "copied ✓" : "copy failed";
+        setTimeout(() => { b.textContent = "copy"; }, 1400);
+      };
+    });
+  };
+
+  let entries = [];
+  try {
+    const [st, hist] = await Promise.all([
+      (await fetch("/api/desktop-stt")).json(),
+      (await fetch("/api/desktop-stt/history?limit=200")).json(),
+    ]);
+    if (!ov.isConnected) return;
+    const s = st.settings || {};
+    box.value = s.hotkey || "ctrl+alt+d";
+    $("#d-mode").value = s.mode || "tap";
+    $("#d-cleanup").checked = s.cleanup !== false;
+    $("#d-history").checked = s.history !== false;
+    // The daemon's own report, not the store's wish. A hotkey that failed to
+    // register looks exactly like one that worked until you press it.
+    const live = st.hotkey_live;
+    $("#dstatus").className = "hint" + (st.running ? "" : " warn");
+    $("#dstatus").innerHTML = !st.running
+      ? "the desktop mic is <b>not running</b> — press “restart the mic” below"
+      : (live
+        ? `running · listening on <b>${esc(live)}</b>` +
+          (st.hotkey_method === "native" ? "" : " (fallback hook)") +
+          (st.pending_restart
+            ? ` · <span class="warn">the store says ${esc(s.hotkey)} — restart to bind it</span>`
+            : "")
+        : "running, but it has not reported a hotkey yet — restart it to be sure");
+    entries = hist.entries || [];
+    drawStats(hist.stats || {});
+    drawHistory(entries);
+    ov.dataset.dsttLoaded = "1";
+  } catch (e) {
+    $("#dstatus").textContent = "could not read the desktop mic — " + e.message;
+    $("#dstatus").className = "hint warn";
+    $("#dhist").innerHTML = "";
+    return;
+  }
+
+  $("#d-copyall").onclick = async b => {
+    const t = entries.map(e => `[${e.ts}] ${e.text}`).join("\n\n");
+    const ok = await copyText(t);
+    const btn = ov.querySelector("#d-copyall");
+    btn.textContent = ok ? `copied ${entries.length} ✓` : "copy failed";
+    setTimeout(() => { btn.textContent = "copy all"; }, 1600);
+  };
+
+  $("#d-restart").onclick = async () => {
+    const btn = ov.querySelector("#d-restart");
+    btn.disabled = true;
+    btn.textContent = "restarting…";
+    let out = {};
+    try {
+      out = await (await fetch("/api/desktop-stt/restart", { method: "POST" })).json();
+    } catch (e) { out = { ok: false, detail: e.message }; }
+    btn.textContent = out.ok ? "restarted ✓" : "restart failed";
+    $("#dstatus").textContent = out.detail || "";
+    $("#dstatus").className = "hint" + (out.ok ? "" : " warn");
+    setTimeout(() => { btn.disabled = false; btn.textContent = "restart the mic"; }, 2000);
+  };
+}
 
 // The voice list is the one slow thing behind the gear: answering it can mean
 // waking kokoro, which loads a 310MB model. The server now answers inside 2s

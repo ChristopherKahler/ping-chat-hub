@@ -250,3 +250,67 @@ def migrate_if_needed(cfg) -> dict:
     doc["pairs"] = imported
     save(cfg, doc)
     return doc
+
+
+# ── inline rules: "head list=headless*" ──────────────────────────────────────
+# The list is only worth having if adding to it costs nothing. It used to cost
+# a trip into the settings modal, which Chris was making EVERY time a word came
+# out wrong -- so the fix competed with the work and usually lost. This is the
+# same edit expressed as a message: type or say the whole thing and nothing
+# else, and the message becomes the rule instead of being sent.
+#
+#     head list=headless*
+#     ^ heard      ^ meant  ^ the marker
+#
+# The trailing `*` is what separates a rule from an ordinary sentence that
+# happens to contain an `=`. Requiring the message to be ONLY the rule is the
+# second guard: a paragraph ending in a star is still a paragraph.
+RULE_RE = re.compile(r"^\s*(?P<heard>[^=\n]+?)\s*=\s*(?P<meant>[^\n]*?)\s*\*\s*$")
+
+
+def parse_rule(text: str) -> dict | None:
+    """{"from","to"} for a message that IS a rule, else None.
+
+    Splits on the FIRST `=` -- the left side is what the model heard, and a
+    misheard phrase is far more likely to contain an `=` than a correction is.
+    An empty right side is allowed on purpose: `um=*` deletes a filler word.
+    """
+    m = RULE_RE.match(text or "")
+    if not m:
+        return None
+    heard = m.group("heard").strip()
+    if not heard:
+        return None
+    return {"from": heard, "to": m.group("meant").strip()}
+
+
+def add_rule(cfg, frm: str, to: str) -> dict:
+    """Upsert one pair. Matching an existing left side UPDATES it rather than
+    appending a second rule for the same word -- two rules for one phrase means
+    the first silently wins and the second looks broken."""
+    frm = str(frm).strip()
+    if not frm:
+        return {"ok": False, "detail": "nothing on the left of the ="}
+    doc = load(cfg)
+    pairs = doc.get("pairs") or []
+    for pair in pairs:
+        if str(pair.get("from", "")).strip().lower() == frm.lower():
+            was = pair.get("to", "")
+            pair["to"] = to
+            pair["enabled"] = True      # re-arm a rule that had been switched off
+            save(cfg, doc)
+            return {"ok": True, "action": "updated", "from": frm, "to": to,
+                    "was": was, "count": len(pairs)}
+    pairs.append({"from": frm, "to": to, "enabled": True})
+    doc["pairs"] = pairs
+    save(cfg, doc)
+    return {"ok": True, "action": "added", "from": frm, "to": to,
+            "count": len(pairs)}
+
+
+def consume_rule(cfg, text: str) -> dict | None:
+    """The whole interception in one call: rule -> applied, anything else -> None."""
+    rule = parse_rule(text)
+    if rule is None:
+        return None
+    return add_rule(cfg, rule["from"], rule["to"])
