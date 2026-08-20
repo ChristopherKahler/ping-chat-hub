@@ -550,12 +550,16 @@ class Handler(BaseHTTPRequestHandler):
             self._json(replacements.migrate_if_needed(CFG))
         elif u.path == "/api/inbox":
             from ping_hub import inbox
+            from ping_hub.engine import HUB_TITLE
             q = parse_qs(u.query)
             try:
                 limit = int((q.get("limit") or ["500"])[0])
             except ValueError:
                 limit = 500
-            self._json({"notes": inbox.read(CFG, max(1, min(limit, 5000)))})
+            # the standing relay title travels with the notes: the card
+            # binds a channel to it, and a channel is bound by NAME
+            self._json({"notes": inbox.read(CFG, max(1, min(limit, 5000))),
+                        "title": HUB_TITLE, "side": "win"})
         elif u.path == "/api/desktop-stt":
             from ping_hub import desktop_stt
             self._json(desktop_stt.status(CFG))

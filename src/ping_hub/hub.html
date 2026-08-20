@@ -695,6 +695,7 @@
     <div id="inboxcard" title="your inbox — notes and dictation drills">
       <span class="ilabel">inbox</span>
       <span class="icount" id="inboxcount"></span>
+      <button class="imic" id="inboxchan" title="bind a channel to your inbox">ch +</button>
       <button class="imic" id="inboxmic" title="dictate straight into the inbox">🎤</button>
     </div>
     <input id="filter" placeholder="filter sessions…" autocomplete="off">
@@ -2163,8 +2164,17 @@ async function refreshInboxCount() {
   const el = document.getElementById("inboxcount");
   if (!el) return;
   try {
-    const n = ((await (await fetch("/api/inbox?limit=5000")).json()).notes || []).length;
-    el.textContent = n ? String(n) : "";
+    const doc = await (await fetch("/api/inbox?limit=5000")).json();
+    inboxTitle = doc.title || inboxTitle;
+    const n = (doc.notes || []).length;
+    // the bound channel comes from the roster, which is where every other
+    // channel badge on this page comes from
+    const mine = roster.find(r => r.title === inboxTitle);
+    const ch = mine && mine.channel !== "" && mine.channel !== undefined
+      ? "ch " + mine.channel : "";
+    el.textContent = [ch, n ? n + " notes" : ""].filter(Boolean).join(" \u00b7 ");
+    const cb = document.getElementById("inboxchan");
+    if (cb) cb.textContent = ch || "ch +";
   } catch (e) { /* leave the last known count rather than blanking it */ }
 }
 
@@ -2183,6 +2193,37 @@ document.getElementById("inboxcard").onclick = e => {
 // wants the transcript rather than a ping.
 document.getElementById("inboxmic").onclick = () =>
   startRec({ label: "inbox", into: t => keepNote(t) });
+
+// The inbox binds a channel through the SAME endpoint a session card uses, and
+// it needs no daemon change to do it: a slot maps a digit to a codename, and
+// cx-ptt pings that codename with `base relay ping` without caring what is
+// behind the name. The hub's own standing title is a relay title like any
+// other, so ctrl+alt+num N reaches it exactly the way it reaches a session
+// (Chris, 2026-08-20 — this was claimed to need a cx-ptt edit; it does not).
+let inboxTitle = null;
+
+document.getElementById("inboxchan").onclick = ev => {
+  ev.stopPropagation();
+  if (!inboxTitle) return;
+  const taken = {};
+  for (const r of roster) if (r.channel !== "") taken[r.channel] = r.title;
+  const digits = [..."0123456789"].map(d =>
+    `<button data-slot="${d}" title="${taken[d] ? "steals from " + taken[d] : "free"}">${d}${taken[d] ? "\u00b7" : ""}</button>`
+  ).join("");
+  const p = showPop(ev.clientX, ev.clientY,
+    `<div class="title">bind <b>your inbox</b> to a channel</div>
+     <div class="row">${digits}</div>
+     <div class="hint">ctrl+alt+num N dictates straight here \u00b7 dotted = taken
+       (assigning steals)</div>`);
+  p.querySelectorAll("button[data-slot]").forEach(b => b.onclick = async () => {
+    await fetch("/api/channel", { method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ title: inboxTitle, side: "win", slot: b.dataset.slot }) });
+    closePop();
+    loadRoster();
+    refreshInboxCount();
+  });
+};
 
 async function loadInbox() {
   document.getElementById("inboxcard").classList.toggle("on", !sel);
