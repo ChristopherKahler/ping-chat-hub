@@ -548,6 +548,14 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/replacements":
             from ping_hub import replacements
             self._json(replacements.migrate_if_needed(CFG))
+        elif u.path == "/api/inbox":
+            from ping_hub import inbox
+            q = parse_qs(u.query)
+            try:
+                limit = int((q.get("limit") or ["500"])[0])
+            except ValueError:
+                limit = 500
+            self._json({"notes": inbox.read(CFG, max(1, min(limit, 5000)))})
         elif u.path == "/api/desktop-stt":
             from ping_hub import desktop_stt
             self._json(desktop_stt.status(CFG))
@@ -1010,6 +1018,26 @@ class Handler(BaseHTTPRequestHandler):
                             "detail": f"spawning {side} tab in {cwd or 'home'}"})
             except OSError as e:
                 self._json({"ok": False, "detail": str(e)}, 500)
+        elif u.path == "/api/inbox":
+            # A word fix still wins over a note. Dictating "heard=meant*" into
+            # the inbox is the whole drill: say it, see it, correct it, say it
+            # again — and the correction has to reach the library, not the pile.
+            from ping_hub import inbox, replacements
+            msg = str(payload.get("msg", ""))
+            rule = replacements.consume_rule(CFG, msg)
+            if rule is not None:
+                self._json({"ok": bool(rule.get("ok")), "rule": rule}, 200)
+                return
+            note = inbox.add(CFG, msg, str(payload.get("source", "")))
+            if note is None:
+                self._json({"ok": False, "detail": "nothing to keep"}, 400)
+            else:
+                self._json({"ok": True, "note": note})
+        elif u.path == "/api/inbox/delete":
+            from ping_hub import inbox
+            gone = inbox.remove(CFG, str(payload.get("ts", "")),
+                                str(payload.get("text", "")))
+            self._json({"ok": bool(gone), "removed": gone})
         elif u.path == "/api/replacements/rule":
             # A word fix belongs to the LIBRARY, not to a conversation. Making
             # it require a selected thread was an accident of living on the

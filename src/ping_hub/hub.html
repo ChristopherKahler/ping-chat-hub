@@ -382,6 +382,19 @@
   #modal .hotkeybox { font-family: ui-monospace, Consolas, monospace;
                       letter-spacing: .5px; text-align: center; }
   #modal .hotkeybox.arming { border-color: var(--accent); color: var(--accent); }
+  /* the inbox: notes, not messages. No speech-bubble alignment, because there
+     is nobody on the other side of them. */
+  .inbox { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+  .note { background: var(--panel); border: 1px solid var(--line);
+          border-radius: 10px; padding: 9px 12px; }
+  .note .nmeta { display: flex; gap: 8px; align-items: center; font-size: 11px;
+                 color: var(--dim); margin-bottom: 3px; }
+  .note .nmeta .grow { flex: 1; min-width: 0; }
+  .note .nmeta button { border: 1px solid var(--line); background: var(--panel2);
+        color: var(--text); border-radius: 6px; padding: 2px 8px; font-size: 11px;
+        cursor: pointer; flex: none; }
+  .note .ntext { font-size: 14px; line-height: 1.5; white-space: pre-wrap;
+                 word-break: break-word; }
   /* Update badge: hidden until there IS one, so the header keeps its shape on
      the overwhelming majority of loads. A badge that is always there is a
      badge nobody reads. */
@@ -2060,23 +2073,29 @@ async function send() {
   const text = box.value.trim();
   if (!text) return;
   if (!sel) {
-    // No thread selected. A word fix still goes through — the library is
-    // global and never needed a conversation. Anything else says so out loud:
-    // this used to `return` and the message simply vanished.
+    // No thread selected: this is the inbox, the one thread that is not a
+    // conversation. It used to `return` here and the message simply vanished.
     let out = null;
     try {
-      const r = await fetch("/api/replacements/rule", { method: "POST",
+      const r = await fetch("/api/inbox", { method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({ msg: text }) });
       out = await r.json().catch(() => null);
     } catch (e) { out = { ok: false, detail: e.message }; }
-    if (out && out.ok) {
-      box.value = "";
-      growBox();
-      composeError(`word fix ${out.action}: ${out.from} \u2192 ${out.to || "(removed)"}`);
+    if (!out || !out.ok) {
+      composeError("could not keep that" + (out && out.detail ? " \u2014 " + out.detail : ""));
       return;
     }
-    composeError("pick a thread first \u2014 or type a word fix like heard=meant*");
+    box.value = "";
+    growBox();
+    if (out.rule) {
+      // the drill: say the fix, and it reaches the library rather than the pile
+      const r = out.rule;
+      composeError(`word fix ${r.action}: ${r.from} \u2192 ${r.to || "(removed)"}`);
+    } else {
+      composeError("");
+    }
+    loadInbox();
     return;
   }
   const toTitle = sel, toSide = selSide;      // the thread may change mid-flight
@@ -2109,6 +2128,57 @@ async function send() {
 }
 document.getElementById("sendb").onclick = send;
 
+// ── the inbox ───────────────────────────────────────────────────────────────
+// The boot screen used to say "select a thread" and do nothing else. It is the
+// one place in the app that points at no session, which makes it the right
+// place for notes and for dictation drills: say a line, see exactly what the
+// mic heard, correct it with heard=meant*, say it again.
+async function loadInbox() {
+  if (sel) return;                       // a thread took over while this was in flight
+  const box = document.getElementById("msgs");
+  let notes = [];
+  try {
+    notes = (await (await fetch("/api/inbox?limit=500")).json()).notes || [];
+  } catch (e) {
+    box.innerHTML = '<div id="empty">inbox unavailable \u2014 ' + e.message + '</div>';
+    return;
+  }
+  if (sel) return;
+  const esc = t => String(t == null ? "" : t)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  if (!notes.length) {
+    box.innerHTML = '<div id="empty">your inbox \u2014 nothing here yet. Type or ' +
+      'dictate anything and it stays. A line like <b>heard=meant*</b> files a ' +
+      'word fix instead.</div>';
+    return;
+  }
+  box.innerHTML = '<div class="inbox">' + notes.map((n, i) =>
+    `<div class="note" data-i="${i}">
+       <div class="nmeta"><span class="grow">${esc((n.ts || "").replace("T", " ").slice(5, 16))}
+         \u00b7 ${n.words || 0}w</span>
+         <button class="ncopy" data-i="${i}">copy</button>
+         <button class="ndel" data-i="${i}" title="delete this note">\u2715</button></div>
+       <div class="ntext">${esc(n.text)}</div>
+     </div>`).join("") + "</div>";
+  box.querySelectorAll(".ncopy").forEach(b => {
+    b.onclick = async () => {
+      const ok = await copyText(notes[+b.dataset.i].text);
+      b.textContent = ok ? "copied \u2713" : "failed";
+      setTimeout(() => { b.textContent = "copy"; }, 1400);
+    };
+  });
+  box.querySelectorAll(".ndel").forEach(b => {
+    b.onclick = async () => {
+      const n = notes[+b.dataset.i];
+      b.disabled = true;
+      await fetch("/api/inbox/delete", { method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ ts: n.ts, text: n.text }) });
+      loadInbox();
+    };
+  });
+}
+
 // Clicking the title lets go of the thread. Before this the only way back to
 // the empty screen was a reload, which threw away everything the page held in
 // memory just to stop looking at one conversation.
@@ -2122,8 +2192,7 @@ document.getElementById("hinfo").onclick = () => {
   composeError("");
   renderList();
   document.getElementById("hinfo").textContent = "ping hub";
-  document.getElementById("msgs").innerHTML =
-    '<div id="empty">select a thread — pings only, both directions</div>';
+  loadInbox();
 };
 // Slack-style drafts: unsent text is keyed per thread and survives navigation
 // and reloads indefinitely — cleared only by a successful send
@@ -3380,6 +3449,7 @@ if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").cat
 
 loadRoster();
 refreshEscBadge();
+loadInbox();
 // ── shipped-version watch ─────────────────────────────────────────────────
 // no-store on / was already set and was still not enough: an INSTALLED PWA
 // keeps its own shell, so a shipped fix sat on the server while the page ran
