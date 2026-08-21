@@ -2,7 +2,7 @@
 
 **Every Claude Code session you are running, in one window — from your phone.**
 
-Sessions register themselves with [BASE](https://chrisai.cv/skool)'s relay under a
+Sessions register themselves with [BASE](https://github.com/ChristopherKahler/base)'s relay under a
 codename. The hub is a window over that relay: who is alive, what each one is
 doing right now, the full ping history per thread, decision cards that survive
 you walking away, and a launcher that opens real terminal tabs. It talks and
